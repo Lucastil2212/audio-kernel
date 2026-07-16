@@ -21,6 +21,12 @@ class StereogramView @JvmOverloads constructor(
     attrs: AttributeSet? = null
 ) : View(context, attrs) {
 
+    init {
+        // Never steal vertical scrolls from the parent NestedScrollView.
+        isClickable = false
+        isFocusable = false
+    }
+
     private var bitmap: Bitmap? = null
     private var pixels: IntArray = IntArray(0)
     private var depth: FloatArray = FloatArray(0)

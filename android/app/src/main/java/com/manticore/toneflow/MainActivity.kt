@@ -6,12 +6,15 @@ import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.LayoutInflater
+import android.view.View
+import android.widget.LinearLayout
 import android.widget.SeekBar
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.recyclerview.widget.LinearLayoutManager
 import com.manticore.toneflow.databinding.ActivityMainBinding
 import kotlin.math.log10
 import kotlin.math.max
@@ -20,7 +23,7 @@ import kotlin.math.roundToInt
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var engine: NativeToneEngine
-    private lateinit var presetAdapter: PresetAdapter
+    private var presetItems: List<PresetItem> = emptyList()
     private var selectedPreset = 0
     private var playing = false
     private var syncingUi = false
@@ -86,7 +89,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupPresets() {
         val count = engine.presetCount()
-        val items = (0 until count).map { index ->
+        presetItems = (0 until count).map { index ->
             PresetItem(
                 index = index,
                 title = engine.presetLabel(index),
@@ -94,31 +97,51 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        val freeIdx = items.indexOfFirst { it.title.contains("Free Play") }
+        val freeIdx = presetItems.indexOfFirst { it.title.contains("Free Play") }
         selectedPreset = if (freeIdx >= 0) freeIdx else 0
 
-        presetAdapter = PresetAdapter(items) { item ->
-            selectedPreset = item.index
-            engine.setPreset(item.index)
-            binding.selectedPreset.text = item.title
-            binding.selectedDescription.text = item.description
-            syncSlidersFromEngine()
-            refreshCycleButtons()
-            if (!playing) {
-                startPlayback()
-            }
+        renderPresetList()
+
+        if (presetItems.isNotEmpty()) {
+            applyPreset(presetItems[selectedPreset], startIfNeeded = false)
         }
-        presetAdapter.setSelectedIndex(selectedPreset)
+    }
 
-        binding.presetList.layoutManager = LinearLayoutManager(this)
-        binding.presetList.adapter = presetAdapter
-        binding.presetList.isNestedScrollingEnabled = false
+    private fun renderPresetList() {
+        val container = binding.presetContainer
+        container.removeAllViews()
+        val inflater = LayoutInflater.from(this)
 
-        if (items.isNotEmpty()) {
-            binding.selectedPreset.text = items[selectedPreset].title
-            binding.selectedDescription.text = items[selectedPreset].description
-            engine.setPreset(selectedPreset)
-            syncSlidersFromEngine()
+        presetItems.forEach { item ->
+            val row = inflater.inflate(R.layout.item_preset, container, false) as LinearLayout
+            val title = row.findViewById<TextView>(R.id.presetTitle)
+            val description = row.findViewById<TextView>(R.id.presetDescription)
+            title.text = item.title
+            description.text = item.description
+            updatePresetRowBackground(row, item.index == selectedPreset)
+            row.setOnClickListener {
+                selectedPreset = item.index
+                renderPresetList()
+                applyPreset(item, startIfNeeded = true)
+            }
+            container.addView(row)
+        }
+    }
+
+    private fun updatePresetRowBackground(row: View, selected: Boolean) {
+        row.setBackgroundResource(
+            if (selected) R.drawable.preset_item_selected else R.drawable.preset_item_bg
+        )
+    }
+
+    private fun applyPreset(item: PresetItem, startIfNeeded: Boolean) {
+        engine.setPreset(item.index)
+        binding.selectedPreset.text = item.title
+        binding.selectedDescription.text = item.description
+        syncSlidersFromEngine()
+        refreshCycleButtons()
+        if (startIfNeeded && !playing) {
+            startPlayback()
         }
     }
 
