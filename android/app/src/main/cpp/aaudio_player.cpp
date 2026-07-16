@@ -11,10 +11,41 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
 namespace manticore::android {
+namespace {
 
-AAudioPlayer::AAudioPlayer() = default;
+bool tryOpenWithSharing(AAudioStreamBuilder* builder, AAudioStream** out,
+                        aaudio_sharing_mode_t mode)
+{
+    AAudioStreamBuilder_setSharingMode(builder, mode);
+    const aaudio_result_t result = AAudioStreamBuilder_openStream(builder, out);
+    return result == AAUDIO_OK && out != nullptr && *out != nullptr;
+}
+
+}  // namespace
+
+AAudioPlayer::AAudioPlayer()
+{
+    micRing_.assign(kRingSize, 0.0f);
+}
 
 AAudioPlayer::~AAudioPlayer() { stop(); }
+
+void AAudioPlayer::minimizeBuffer(AAudioStream* stream)
+{
+    if (stream == nullptr) {
+        return;
+    }
+    const int32_t burst = AAudioStream_getFramesPerBurst(stream);
+    if (burst <= 0) {
+        return;
+    }
+    // One burst is the lowest stable size on most devices.
+    const aaudio_result_t setResult =
+        AAudioStream_setBufferSizeInFrames(stream, burst);
+    const int32_t actual = AAudioStream_getBufferSizeInFrames(stream);
+    LOGI("buffer minimize: burst=%d set=%s actual=%d", burst,
+         AAudio_convertResultToText(setResult), actual);
+}
 
 bool AAudioPlayer::openOutputStream()
 {
@@ -26,31 +57,44 @@ bool AAudioPlayer::openOutputStream()
     }
 
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
-    AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
     AAudioStreamBuilder_setSampleRate(builder, 48000);
     AAudioStreamBuilder_setChannelCount(builder, 2);
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_FLOAT);
     AAudioStreamBuilder_setPerformanceMode(builder,
                                            AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
-    // Prefer media usage so Bluetooth / headphones route correctly.
-    AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_MEDIA);
+    // Game usage tends to prefer the fast mixer path on many OEMs.
+    AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_GAME);
     AAudioStreamBuilder_setContentType(builder, AAUDIO_CONTENT_TYPE_MUSIC);
-    AAudioStreamBuilder_setDataCallback(builder, dataCallback, this);
+    // Keep callbacks small and regular.
+    AAudioStreamBuilder_setDataCallback(builder, outputCallback, this);
     AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
+    // Ask for small callbacks; device may round to its burst.
+    AAudioStreamBuilder_setFramesPerDataCallback(builder, 64);
+    AAudioStreamBuilder_setBufferCapacityInFrames(builder, 256);
 
-    result = AAudioStreamBuilder_openStream(builder, &outputStream_);
-    AAudioStreamBuilder_delete(builder);
-    if (result != AAUDIO_OK || outputStream_ == nullptr) {
-        LOGE("open output failed: %s", AAudio_convertResultToText(result));
-        outputStream_ = nullptr;
-        return false;
+    if (!tryOpenWithSharing(builder, &outputStream_,
+                            AAUDIO_SHARING_MODE_EXCLUSIVE) &&
+        !tryOpenWithSharing(builder, &outputStream_,
+                            AAUDIO_SHARING_MODE_SHARED)) {
+        // Retry without capacity hints if the OEM rejects them.
+        AAudioStreamBuilder_setFramesPerDataCallback(builder, 0);
+        AAudioStreamBuilder_setBufferCapacityInFrames(builder, 0);
+        if (!tryOpenWithSharing(builder, &outputStream_,
+                                AAUDIO_SHARING_MODE_SHARED)) {
+            LOGE("open output failed");
+            AAudioStreamBuilder_delete(builder);
+            outputStream_ = nullptr;
+            return false;
+        }
     }
+    AAudioStreamBuilder_delete(builder);
 
     sampleRate_ = AAudioStream_getSampleRate(outputStream_);
     framesPerBurst_ = AAudioStream_getFramesPerBurst(outputStream_);
     if (framesPerBurst_ <= 0) {
-        framesPerBurst_ = 192;
+        framesPerBurst_ = 96;
     }
+    minimizeBuffer(outputStream_);
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -64,10 +108,12 @@ bool AAudioPlayer::openOutputStream()
         engine_.setMicFeedbackEnabled(micEn);
         engine_.setMicFeedbackGain(micGain);
         engine_.setToneMix(toneMix);
+        engine_.setMicLowLatency(true);
         engine_.setPlaying(true);
     }
 
-    LOGI("output opened: sr=%d burst=%d", sampleRate_, framesPerBurst_);
+    LOGI("output opened: sr=%d burst=%d sharing=%d", sampleRate_,
+         framesPerBurst_, AAudioStream_getSharingMode(outputStream_));
     return true;
 }
 
@@ -85,27 +131,43 @@ bool AAudioPlayer::openInputStream()
     }
 
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_INPUT);
-    AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
     AAudioStreamBuilder_setSampleRate(builder, sampleRate_);
     AAudioStreamBuilder_setChannelCount(builder, 1);
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_FLOAT);
     AAudioStreamBuilder_setPerformanceMode(builder,
                                            AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    // Unprocessed / recognition paths avoid telephony AEC/NS delay.
     AAudioStreamBuilder_setInputPreset(builder,
-                                       AAUDIO_INPUT_PRESET_VOICE_PERFORMANCE);
+                                       AAUDIO_INPUT_PRESET_UNPROCESSED);
+    AAudioStreamBuilder_setFramesPerDataCallback(builder, framesPerBurst_);
+    AAudioStreamBuilder_setBufferCapacityInFrames(builder, framesPerBurst_ * 2);
+    AAudioStreamBuilder_setDataCallback(builder, inputCallback, this);
+    AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
 
-    result = AAudioStreamBuilder_openStream(builder, &inputStream_);
-    AAudioStreamBuilder_delete(builder);
-    if (result != AAUDIO_OK || inputStream_ == nullptr) {
-        LOGE("open input failed: %s", AAudio_convertResultToText(result));
-        inputStream_ = nullptr;
-        return false;
+    if (!tryOpenWithSharing(builder, &inputStream_,
+                            AAUDIO_SHARING_MODE_EXCLUSIVE)) {
+        LOGI("exclusive input unavailable, falling back to shared");
+        AAudioStreamBuilder_setInputPreset(builder,
+                                           AAUDIO_INPUT_PRESET_VOICE_RECOGNITION);
+        if (!tryOpenWithSharing(builder, &inputStream_,
+                                AAUDIO_SHARING_MODE_SHARED)) {
+            LOGE("open input failed");
+            AAudioStreamBuilder_delete(builder);
+            inputStream_ = nullptr;
+            return false;
+        }
     }
+    AAudioStreamBuilder_delete(builder);
 
     inputChannels_ = AAudioStream_getChannelCount(inputStream_);
     if (inputChannels_ <= 0) {
         inputChannels_ = 1;
     }
+    minimizeBuffer(inputStream_);
+
+    // Drop any stale samples so feedback starts from "now".
+    ringWrite_.store(0, std::memory_order_relaxed);
+    ringRead_.store(0, std::memory_order_relaxed);
 
     result = AAudioStream_requestStart(inputStream_);
     if (result != AAUDIO_OK) {
@@ -115,8 +177,10 @@ bool AAudioPlayer::openInputStream()
         return false;
     }
 
-    LOGI("input opened: ch=%d sr=%d", inputChannels_,
-         AAudioStream_getSampleRate(inputStream_));
+    LOGI("input opened: ch=%d sr=%d burst=%d sharing=%d", inputChannels_,
+         AAudioStream_getSampleRate(inputStream_),
+         AAudioStream_getFramesPerBurst(inputStream_),
+         AAudioStream_getSharingMode(inputStream_));
     return true;
 }
 
@@ -134,13 +198,65 @@ void AAudioPlayer::closeStreams()
     }
 }
 
-void AAudioPlayer::ensureMicBuffer(int32_t numFrames)
+void AAudioPlayer::ensureScratch(int32_t numFrames)
 {
-    const size_t need =
-        static_cast<size_t>(numFrames) * static_cast<size_t>(inputChannels_);
-    if (micBuffer_.size() < need) {
-        micBuffer_.assign(need, 0.0f);
+    if (static_cast<int32_t>(micScratch_.size()) < numFrames) {
+        micScratch_.assign(static_cast<size_t>(numFrames), 0.0f);
     }
+}
+
+void AAudioPlayer::pushMicFrames(const float* data, int32_t numFrames,
+                                 int32_t channels)
+{
+    if (data == nullptr || numFrames <= 0 || channels <= 0) {
+        return;
+    }
+
+    uint32_t w = ringWrite_.load(std::memory_order_relaxed);
+    for (int32_t i = 0; i < numFrames; ++i) {
+        float mono = data[i * channels];
+        if (channels > 1) {
+            mono = 0.5f * (data[i * channels] + data[i * channels + 1]);
+        }
+        micRing_[w & kRingMask] = mono;
+        ++w;
+    }
+    ringWrite_.store(w, std::memory_order_release);
+
+    // Keep only the freshest ~2 bursts so we never accumulate delay.
+    const uint32_t r = ringRead_.load(std::memory_order_relaxed);
+    const uint32_t avail = w - r;
+    const uint32_t maxKeep = static_cast<uint32_t>(std::max(framesPerBurst_ * 2, 64));
+    if (avail > maxKeep) {
+        ringRead_.store(w - maxKeep, std::memory_order_relaxed);
+    }
+}
+
+int32_t AAudioPlayer::popMicFrames(float* dstMono, int32_t numFrames)
+{
+    if (dstMono == nullptr || numFrames <= 0) {
+        return 0;
+    }
+
+    const uint32_t w = ringWrite_.load(std::memory_order_acquire);
+    uint32_t r = ringRead_.load(std::memory_order_relaxed);
+    uint32_t avail = w - r;
+
+    // Prefer latest: if we have more than needed, skip older frames.
+    if (avail > static_cast<uint32_t>(numFrames)) {
+        r = w - static_cast<uint32_t>(numFrames);
+        avail = static_cast<uint32_t>(numFrames);
+    }
+
+    const int32_t got = static_cast<int32_t>(avail);
+    for (int32_t i = 0; i < got; ++i) {
+        dstMono[i] = micRing_[(r + static_cast<uint32_t>(i)) & kRingMask];
+    }
+    for (int32_t i = got; i < numFrames; ++i) {
+        dstMono[i] = 0.0f;
+    }
+    ringRead_.store(r + static_cast<uint32_t>(got), std::memory_order_relaxed);
+    return got;
 }
 
 bool AAudioPlayer::start()
@@ -177,42 +293,38 @@ void AAudioPlayer::stop()
     engine_.setPlaying(false);
 }
 
-aaudio_data_callback_result_t AAudioPlayer::dataCallback(AAudioStream*,
-                                                         void* userData,
-                                                         void* audioData,
-                                                         int32_t numFrames)
+aaudio_data_callback_result_t AAudioPlayer::inputCallback(AAudioStream*,
+                                                          void* userData,
+                                                          void* audioData,
+                                                          int32_t numFrames)
+{
+    auto* self = static_cast<AAudioPlayer*>(userData);
+    if (!self->micWanted_.load(std::memory_order_relaxed)) {
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
+    self->pushMicFrames(static_cast<const float*>(audioData), numFrames,
+                        self->inputChannels_);
+    return AAUDIO_CALLBACK_RESULT_CONTINUE;
+}
+
+aaudio_data_callback_result_t AAudioPlayer::outputCallback(AAudioStream*,
+                                                           void* userData,
+                                                           void* audioData,
+                                                           int32_t numFrames)
 {
     auto* self = static_cast<AAudioPlayer*>(userData);
     auto* out = static_cast<float*>(audioData);
 
     const float* micPtr = nullptr;
     uint32_t micCh = 0;
-
-    if (self->micWanted_.load() && self->inputStream_ != nullptr) {
-        self->ensureMicBuffer(numFrames);
-        const aaudio_result_t readResult = AAudioStream_read(
-            self->inputStream_, self->micBuffer_.data(), numFrames, 0);
-        if (readResult >= 0) {
-            const int32_t got = readResult;
-            if (got < numFrames) {
-                // Pad underrun with silence.
-                const size_t start =
-                    static_cast<size_t>(got) *
-                    static_cast<size_t>(self->inputChannels_);
-                const size_t end =
-                    static_cast<size_t>(numFrames) *
-                    static_cast<size_t>(self->inputChannels_);
-                std::fill(self->micBuffer_.begin() +
-                              static_cast<std::ptrdiff_t>(start),
-                          self->micBuffer_.begin() +
-                              static_cast<std::ptrdiff_t>(end),
-                          0.0f);
-            }
-            micPtr = self->micBuffer_.data();
-            micCh = static_cast<uint32_t>(self->inputChannels_);
-        }
+    if (self->micWanted_.load(std::memory_order_relaxed)) {
+        self->ensureScratch(numFrames);
+        self->popMicFrames(self->micScratch_.data(), numFrames);
+        micPtr = self->micScratch_.data();
+        micCh = 1;
     }
 
+    // Keep lock hold short: render under lock (engine not thread-safe yet).
     std::lock_guard<std::mutex> lock(self->mutex_);
     self->engine_.renderInterleavedWithMic(out, micPtr,
                                            static_cast<uint32_t>(numFrames),
@@ -235,6 +347,7 @@ void AAudioPlayer::setPresetIndex(int index)
     if (preset != nullptr) {
         engine_.setPreset(*preset);
         engine_.reset();
+        engine_.setMicLowLatency(true);
         engine_.setPlaying(true);
     }
 }
@@ -305,6 +418,7 @@ void AAudioPlayer::setMicFeedbackEnabled(bool enabled)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         engine_.setMicFeedbackEnabled(enabled);
+        engine_.setMicLowLatency(true);
     }
 
     if (!running_.load()) {
@@ -317,6 +431,10 @@ void AAudioPlayer::setMicFeedbackEnabled(bool enabled)
             micWanted_.store(false);
             std::lock_guard<std::mutex> lock(mutex_);
             engine_.setMicFeedbackEnabled(false);
+        } else {
+            // Re-minimize buffers when enabling live path.
+            minimizeBuffer(outputStream_);
+            minimizeBuffer(inputStream_);
         }
     } else if (inputStream_ != nullptr) {
         AAudioStream_requestStop(inputStream_);

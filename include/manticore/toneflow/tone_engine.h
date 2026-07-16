@@ -38,6 +38,8 @@ public:
     void setMicFeedbackEnabled(bool enabled);
     void setMicFeedbackGain(float gain);
     void setToneMix(float mix);  // 0 = mic only, 1 = tones only
+    /** Skip reverb / heavy mic filters for minimal monitoring latency. */
+    void setMicLowLatency(bool enabled) { micLowLatency_ = enabled; }
     bool micFeedbackEnabled() const { return micFeedbackEnabled_; }
     float micFeedbackGain() const { return micFeedbackGain_; }
     float toneMix() const { return toneMix_; }
@@ -76,6 +78,7 @@ private:
     float beatPhase_ = 0.0f;
 
     bool micFeedbackEnabled_ = false;
+    bool micLowLatency_ = true;
     float micFeedbackGain_ = 0.35f;
     float toneMix_ = 0.70f;  // default: tones dominant, mic optional bed
     float micRms_ = 0.0f;

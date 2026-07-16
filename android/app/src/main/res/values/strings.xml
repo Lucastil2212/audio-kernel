@@ -12,7 +12,7 @@
     <string name="section_sculpt">Sculpt</string>
     <string name="section_journeys">Journeys</string>
 
-    <string name="mic_hint">Routes mic through DSP to speakers, headphones, or Bluetooth. Prefer headphones to avoid howl.</string>
+    <string name="mic_hint">Low-latency mic monitor → speakers / headphones / Bluetooth. Prefer wired headphones for the tightest feel and to avoid howl.</string>
     <string name="mic_feedback">Enable live mic</string>
     <string name="mic_gain_default">Mic gain</string>
     <string name="mic_gain">Mic gain  %1$d%%</string>

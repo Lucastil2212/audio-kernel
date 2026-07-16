@@ -459,35 +459,43 @@ void ToneEngine::processMicFrame(const float* micInterleaved, uint32_t frames,
         static_cast<float>(std::sqrt(sumSq / static_cast<double>(frames)));
     micRms_ = rawRms;
 
-    // Automatic gain control — keep mic near a comfortable target level.
+    // Fast AGC — snappier tracking for live monitoring.
     const float target = micAgcTarget_;
     if (rawRms > 1e-5f) {
-        const float desired = clamp(target / rawRms, 0.25f, 8.0f);
-        micAgcGain_ += 0.04f * (desired - micAgcGain_);
+        const float desired = clamp(target / rawRms, 0.35f, 6.0f);
+        micAgcGain_ += 0.12f * (desired - micAgcGain_);
     } else {
-        micAgcGain_ += 0.02f * (1.0f - micAgcGain_);
+        micAgcGain_ += 0.05f * (1.0f - micAgcGain_);
     }
 
+    const float g = micAgcGain_ * micFeedbackGain_;
     for (float& s : micFrame_.samples) {
-        s *= micAgcGain_ * micFeedbackGain_;
+        s *= g;
     }
 
+    // Always keep a light rumble filter; skip heavy color/reverb in low-latency.
     micHp_.processFrame(micFrame_);
-    micLp_.processFrame(micFrame_);
-
-    // Follow the live tone filter so mic and tones share a perceptual space.
-    micFilters_.setType(params_.filter == FilterType::Off ? FilterType::Warm
-                                                          : params_.filter);
-    micFilters_.setToneHz(carrierHz_);
-    micFilters_.process(micFrame_);
-
-    if (params_.reverb != ReverbPreset::Off) {
-        micReverb_.setPreset(params_.reverb);
-        micReverb_.setWet(std::min(0.12f, reverb_.wet()));
-        micReverb_.process(micFrame_);
+    if (!micLowLatency_) {
+        micLp_.processFrame(micFrame_);
+        micFilters_.setType(params_.filter == FilterType::Off ? FilterType::Warm
+                                                              : params_.filter);
+        micFilters_.setToneHz(carrierHz_);
+        micFilters_.process(micFrame_);
+        if (params_.reverb != ReverbPreset::Off) {
+            micReverb_.setPreset(params_.reverb);
+            micReverb_.setWet(std::min(0.12f, reverb_.wet()));
+            micReverb_.process(micFrame_);
+        }
     }
 
-    applySoftLimiter(micFrame_);
+    // Cheap soft clip instead of full-frame soft-knee limiter.
+    for (float& s : micFrame_.samples) {
+        if (s > 0.9f) {
+            s = 0.9f + 0.1f * std::tanh((s - 0.9f) * 4.0f);
+        } else if (s < -0.9f) {
+            s = -0.9f + 0.1f * std::tanh((s + 0.9f) * 4.0f);
+        }
+    }
 }
 
 void ToneEngine::renderInterleaved(float* interleavedStereo, uint32_t frames)
