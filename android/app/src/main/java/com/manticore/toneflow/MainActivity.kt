@@ -216,9 +216,9 @@ class MainActivity : AppCompatActivity() {
         binding.volumeBar.progress = 12
         engine.setVolume(0.12f)
         binding.volumeLabel.text = getString(R.string.volume, 12)
-        binding.micGainBar.progress = 35
-        engine.setMicGain(0.35f)
-        binding.micGainLabel.text = getString(R.string.mic_gain, 35)
+        binding.micGainBar.progress = 28
+        engine.setMicGain(0.28f)
+        binding.micGainLabel.text = getString(R.string.mic_gain, 28)
         binding.toneMixBar.progress = 70
         engine.setToneMix(0.70f)
         binding.toneMixLabel.text = getString(R.string.tone_mix, 70, 30)

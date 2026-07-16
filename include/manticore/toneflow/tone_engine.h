@@ -79,11 +79,12 @@ private:
 
     bool micFeedbackEnabled_ = false;
     bool micLowLatency_ = true;
-    float micFeedbackGain_ = 0.35f;
+    float micFeedbackGain_ = 0.28f;
     float toneMix_ = 0.70f;  // default: tones dominant, mic optional bed
     float micRms_ = 0.0f;
     float micAgcGain_ = 1.0f;
-    float micAgcTarget_ = 0.08f;
+    float micAgcTarget_ = 0.06f;
+    float micGateOpen_ = 0.0f;  // smoothed gate [0..1]
 
     ToneOscillator osc_;
     PerceptionState perception_{};
@@ -97,6 +98,8 @@ private:
     OnePoleLowPass noiseLp_;
     OnePoleHighPass micHp_;
     OnePoleLowPass micLp_;
+    OnePoleHighPass micHpTight_;
+    OnePoleLowPass micLpTight_;
     AudioFrame toneFrame_;
     AudioFrame noiseFrame_;
     AudioFrame dryFrame_;

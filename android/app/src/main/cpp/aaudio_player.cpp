@@ -136,26 +136,22 @@ bool AAudioPlayer::openInputStream()
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_FLOAT);
     AAudioStreamBuilder_setPerformanceMode(builder,
                                            AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
-    // Unprocessed / recognition paths avoid telephony AEC/NS delay.
+    // Voice recognition: light OS noise conditioning without telephony AEC delay.
     AAudioStreamBuilder_setInputPreset(builder,
-                                       AAUDIO_INPUT_PRESET_UNPROCESSED);
+                                       AAUDIO_INPUT_PRESET_VOICE_RECOGNITION);
     AAudioStreamBuilder_setFramesPerDataCallback(builder, framesPerBurst_);
     AAudioStreamBuilder_setBufferCapacityInFrames(builder, framesPerBurst_ * 2);
     AAudioStreamBuilder_setDataCallback(builder, inputCallback, this);
     AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
 
     if (!tryOpenWithSharing(builder, &inputStream_,
-                            AAUDIO_SHARING_MODE_EXCLUSIVE)) {
-        LOGI("exclusive input unavailable, falling back to shared");
-        AAudioStreamBuilder_setInputPreset(builder,
-                                           AAUDIO_INPUT_PRESET_VOICE_RECOGNITION);
-        if (!tryOpenWithSharing(builder, &inputStream_,
-                                AAUDIO_SHARING_MODE_SHARED)) {
-            LOGE("open input failed");
-            AAudioStreamBuilder_delete(builder);
-            inputStream_ = nullptr;
-            return false;
-        }
+                            AAUDIO_SHARING_MODE_EXCLUSIVE) &&
+        !tryOpenWithSharing(builder, &inputStream_,
+                            AAUDIO_SHARING_MODE_SHARED)) {
+        LOGE("open input failed");
+        AAudioStreamBuilder_delete(builder);
+        inputStream_ = nullptr;
+        return false;
     }
     AAudioStreamBuilder_delete(builder);
 

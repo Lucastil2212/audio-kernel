@@ -30,8 +30,11 @@ void ToneEngine::prepare(uint32_t sampleRateHz, uint32_t framesPerCallback)
     micFilters_.setType(FilterType::Warm);
     noiseHp_.setCutoff(80.0f, static_cast<float>(sampleRateHz_));
     noiseLp_.setCutoff(1400.0f, static_cast<float>(sampleRateHz_));
-    micHp_.setCutoff(90.0f, static_cast<float>(sampleRateHz_));
-    micLp_.setCutoff(6500.0f, static_cast<float>(sampleRateHz_));
+    // Speech / monitoring band — cuts rumble and hiss with almost no delay.
+    micHp_.setCutoff(120.0f, static_cast<float>(sampleRateHz_));
+    micLp_.setCutoff(4500.0f, static_cast<float>(sampleRateHz_));
+    micHpTight_.setCutoff(180.0f, static_cast<float>(sampleRateHz_));
+    micLpTight_.setCutoff(3800.0f, static_cast<float>(sampleRateHz_));
     pink_.seed = 0xC0FFEEu;
     pink_.amplitude = 1.0f;
     pink_.reset();
@@ -210,6 +213,9 @@ void ToneEngine::reset()
     beatPhase_ = 0.0f;
     micRms_ = 0.0f;
     micAgcGain_ = 1.0f;
+    micGateOpen_ = 0.0f;
+    micHpTight_.reset();
+    micLpTight_.reset();
 }
 
 void ToneEngine::smoothTowardTargets()
@@ -433,6 +439,7 @@ void ToneEngine::processMicFrame(const float* micInterleaved, uint32_t frames,
     if (micInterleaved == nullptr || frames == 0 || micChannels == 0) {
         micFrame_.clear();
         micRms_ = 0.0f;
+        micGateOpen_ *= 0.85f;
         return;
     }
 
@@ -441,7 +448,6 @@ void ToneEngine::processMicFrame(const float* micInterleaved, uint32_t frames,
         micFrame_ = AudioFrame(frames, sampleRateHz_, 2);
     }
 
-    double sumSq = 0.0;
     for (uint32_t i = 0; i < frames; ++i) {
         float mono = 0.0f;
         if (micChannels == 1) {
@@ -450,50 +456,63 @@ void ToneEngine::processMicFrame(const float* micInterleaved, uint32_t frames,
             mono = 0.5f * (micInterleaved[i * micChannels] +
                            micInterleaved[i * micChannels + 1]);
         }
-        sumSq += static_cast<double>(mono) * static_cast<double>(mono);
         micFrame_.set(i, 0, mono);
         micFrame_.set(i, 1, mono);
     }
 
-    const float rawRms =
-        static_cast<float>(std::sqrt(sumSq / static_cast<double>(frames)));
-    micRms_ = rawRms;
-
-    // Fast AGC — snappier tracking for live monitoring.
-    const float target = micAgcTarget_;
-    if (rawRms > 1e-5f) {
-        const float desired = clamp(target / rawRms, 0.35f, 6.0f);
-        micAgcGain_ += 0.12f * (desired - micAgcGain_);
-    } else {
-        micAgcGain_ += 0.05f * (1.0f - micAgcGain_);
-    }
-
-    const float g = micAgcGain_ * micFeedbackGain_;
-    for (float& s : micFrame_.samples) {
-        s *= g;
-    }
-
-    // Always keep a light rumble filter; skip heavy color/reverb in low-latency.
+    // Band-limit first so RMS/AGC see a cleaner signal.
     micHp_.processFrame(micFrame_);
-    if (!micLowLatency_) {
-        micLp_.processFrame(micFrame_);
+    micLp_.processFrame(micFrame_);
+    if (micLowLatency_) {
+        // Extra gentle speech shaping without reverb (still ~zero delay).
+        micHpTight_.processFrame(micFrame_);
+        micLpTight_.processFrame(micFrame_);
+    } else {
         micFilters_.setType(params_.filter == FilterType::Off ? FilterType::Warm
                                                               : params_.filter);
         micFilters_.setToneHz(carrierHz_);
         micFilters_.process(micFrame_);
         if (params_.reverb != ReverbPreset::Off) {
             micReverb_.setPreset(params_.reverb);
-            micReverb_.setWet(std::min(0.12f, reverb_.wet()));
+            micReverb_.setWet(std::min(0.10f, reverb_.wet()));
             micReverb_.process(micFrame_);
         }
     }
 
-    // Cheap soft clip instead of full-frame soft-knee limiter.
+    double filteredSq = 0.0;
+    for (float s : micFrame_.samples) {
+        filteredSq += static_cast<double>(s) * static_cast<double>(s);
+    }
+    const float rawRms = static_cast<float>(
+        std::sqrt(filteredSq / static_cast<double>(micFrame_.samples.size())));
+    micRms_ = rawRms;
+
+    // Noise gate — mute hiss/room tone when input is quiet.
+    constexpr float kGateOpen = 0.012f;   // ~-38 dBFS
+    constexpr float kGateClose = 0.007f;  // hysteresis
+    const float gateTarget =
+        (rawRms > (micGateOpen_ > 0.5f ? kGateClose : kGateOpen)) ? 1.0f : 0.0f;
+    // Fast open, slower close to avoid chatter.
+    const float gateAlpha = gateTarget > micGateOpen_ ? 0.45f : 0.08f;
+    micGateOpen_ += gateAlpha * (gateTarget - micGateOpen_);
+
+    // AGC only when the gate is open — never pump up the noise floor.
+    if (micGateOpen_ > 0.2f && rawRms > kGateClose) {
+        const float desired = clamp(micAgcTarget_ / rawRms, 0.5f, 2.2f);
+        micAgcGain_ += 0.06f * (desired - micAgcGain_);
+    } else {
+        micAgcGain_ += 0.04f * (1.0f - micAgcGain_);
+    }
+    micAgcGain_ = clamp(micAgcGain_, 0.5f, 2.2f);
+
+    const float g = micAgcGain_ * micFeedbackGain_ * micGateOpen_;
     for (float& s : micFrame_.samples) {
-        if (s > 0.9f) {
-            s = 0.9f + 0.1f * std::tanh((s - 0.9f) * 4.0f);
-        } else if (s < -0.9f) {
-            s = -0.9f + 0.1f * std::tanh((s + 0.9f) * 4.0f);
+        s *= g;
+        // Soft clip
+        if (s > 0.85f) {
+            s = 0.85f + 0.15f * std::tanh((s - 0.85f) * 3.0f);
+        } else if (s < -0.85f) {
+            s = -0.85f + 0.15f * std::tanh((s + 0.85f) * 3.0f);
         }
     }
 }
