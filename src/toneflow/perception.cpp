@@ -43,13 +43,13 @@ void applyPerception(AudioFrame& stereo, PerceptionMode mode, float beatHz,
         float phase = state.altPhase;
         for (size_t i = 0; i < n; ++i) {
             const float gate = 0.5f - 0.5f * std::cos(phase);
-            const float lGate = 0.25f + 0.75f * gate;
-            const float rGate = 0.25f + 0.75f * (1.0f - gate);
+            // Soft ear emphasis — keep both ears present for coherence.
+            const float lGate = 0.70f + 0.30f * gate;
+            const float rGate = 0.70f + 0.30f * (1.0f - gate);
             const float l = stereo.get(i, 0);
             const float r = stereo.get(i, 1);
-            const float mono = 0.5f * (l + r);
-            stereo.set(i, 0, l * 0.55f * lGate + mono * 0.45f * lGate);
-            stereo.set(i, 1, r * 0.55f * rGate + mono * 0.45f * rGate);
+            stereo.set(i, 0, l * lGate);
+            stereo.set(i, 1, r * rGate);
             phase += kTwoPi * b * dt;
         }
         while (phase >= kTwoPi) {
@@ -63,7 +63,8 @@ void applyPerception(AudioFrame& stereo, PerceptionMode mode, float beatHz,
         const float b = std::max(beatHz, 0.5f);
         float phase = state.shimmerPhase;
         for (size_t i = 0; i < n; ++i) {
-            const float am = 0.90f + 0.10f * std::sin(phase);
+            // Very gentle AM — keeps the massage smooth, not choppy.
+            const float am = 0.96f + 0.04f * std::sin(phase);
             stereo.set(i, 0, stereo.get(i, 0) * am);
             stereo.set(i, 1, stereo.get(i, 1) * am);
             phase += kPi * b * dt;
@@ -77,7 +78,7 @@ void applyPerception(AudioFrame& stereo, PerceptionMode mode, float beatHz,
         float phase = state.breathPhase;
         for (size_t i = 0; i < n; ++i) {
             const float swell =
-                0.72f + 0.28f * (0.5f - 0.5f * std::cos(phase));
+                0.88f + 0.12f * (0.5f - 0.5f * std::cos(phase));
             stereo.set(i, 0, stereo.get(i, 0) * swell);
             stereo.set(i, 1, stereo.get(i, 1) * swell);
             phase += kTwoPi * breathHz * dt;
@@ -115,15 +116,15 @@ void applyPerception(AudioFrame& stereo, PerceptionMode mode, float beatHz,
     }
 
     if (mode == PerceptionMode::Lattice) {
-        // Dual-rate amplitude lattice inspired by multi-layer Hemi-Sync beds.
+        // Soft dual-rate lattice — subtle, never choppy.
         const float b = std::max(beatHz, 0.5f);
         float pa = state.latticePhaseA;
         float pb = state.latticePhaseB;
         for (size_t i = 0; i < n; ++i) {
-            const float a = 0.88f + 0.12f * std::sin(pa);
-            const float c = 0.92f + 0.08f * std::sin(pb);
+            const float a = 0.95f + 0.05f * std::sin(pa);
+            const float c = 0.97f + 0.03f * std::sin(pb);
             stereo.set(i, 0, stereo.get(i, 0) * a * c);
-            stereo.set(i, 1, stereo.get(i, 1) * a * (1.04f - (c - 0.92f)));
+            stereo.set(i, 1, stereo.get(i, 1) * a * (1.01f - (c - 0.97f)));
             pa += kTwoPi * b * dt;
             pb += kTwoPi * (b * 0.5f) * dt;
         }
@@ -139,11 +140,12 @@ void applyPerception(AudioFrame& stereo, PerceptionMode mode, float beatHz,
     }
 
     if (mode == PerceptionMode::Void) {
-        // Deep, slow swells — sparse peaks for "void" journeys.
+        // Slow velvet swells — still present, never drop to silence grit.
         float phase = state.voidPhase;
         constexpr float voidHz = 0.05f;
         for (size_t i = 0; i < n; ++i) {
-            const float swell = 0.35f + 0.65f * std::pow(0.5f - 0.5f * std::cos(phase), 2.0f);
+            const float swell =
+                0.70f + 0.30f * std::pow(0.5f - 0.5f * std::cos(phase), 2.0f);
             stereo.set(i, 0, stereo.get(i, 0) * swell);
             stereo.set(i, 1, stereo.get(i, 1) * swell);
             phase += kTwoPi * voidHz * dt;

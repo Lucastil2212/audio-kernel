@@ -53,12 +53,16 @@ struct ToneParams {
     NoiseMask noiseMask = NoiseMask::None;
     FilterType filter = FilterType::Off;
     float noiseLevelDbfs = -30.0f;
-    float masterVolume = 0.12f;
+    float masterVolume = 0.14f;
     int harmonicLayers = 1;
-    float kernelNoiseBlend = 0.10f;
-    float fadeInSec = 12.0f;
-    float comfortModDepth = 0.04f;
-    float filterMix = 1.0f;  // 0 dry .. 1 fully filtered
+    float kernelNoiseBlend = 0.0f;
+    float fadeInSec = 14.0f;
+    float comfortModDepth = 0.0f;
+    float filterMix = 0.0f;  // 0 dry .. 1 fully filtered
+    /** Soft continuous sub hum (pure sine, mono). 0..1 — keep modest to avoid distortion. */
+    float subLevel = 0.22f;
+    /** Sub hum Hz. Prefer 48–60 on phones; deeper needs a real woofer. */
+    float subHz = 52.0f;
 };
 
 struct TonePreset {

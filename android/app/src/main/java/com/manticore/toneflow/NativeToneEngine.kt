@@ -17,6 +17,8 @@ class NativeToneEngine {
     fun setBeat(hz: Float) = nativeSetBeat(handle, hz)
     fun setHarmonics(layers: Int) = nativeSetHarmonics(handle, layers)
     fun setNoiseBlend(blend: Float) = nativeSetNoiseBlend(handle, blend)
+    fun setSubLevel(level: Float) = nativeSetSubLevel(handle, level)
+    fun subLevel(): Float = nativeSubLevel(handle)
     fun setMicFeedback(enabled: Boolean) = nativeSetMicFeedback(handle, enabled)
     fun setMicGain(gain: Float) = nativeSetMicGain(handle, gain)
     fun setToneMix(mix: Float) = nativeSetToneMix(handle, mix)
@@ -59,6 +61,8 @@ class NativeToneEngine {
     private external fun nativeSetBeat(handle: Long, hz: Float)
     private external fun nativeSetHarmonics(handle: Long, layers: Int)
     private external fun nativeSetNoiseBlend(handle: Long, blend: Float)
+    private external fun nativeSetSubLevel(handle: Long, level: Float)
+    private external fun nativeSubLevel(handle: Long): Float
     private external fun nativeSetMicFeedback(handle: Long, enabled: Boolean)
     private external fun nativeSetMicGain(handle: Long, gain: Float)
     private external fun nativeSetToneMix(handle: Long, mix: Float)

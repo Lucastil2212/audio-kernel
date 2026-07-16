@@ -33,6 +33,11 @@ public:
     void setHarmonicLayers(int layers);
     void setKernelNoiseBlend(float blend);
     void setVolume(float volume);
+    /** Subwoofer / tactile vibration layer (pure low sine + beat pulse). */
+    void setSubLevel(float level);
+    void setSubHz(float hz);
+    float subLevel() const { return params_.subLevel; }
+    float subHz() const { return params_.subHz; }
 
     /** Optional realtime mic feedback into the output mix. */
     void setMicFeedbackEnabled(bool enabled);
@@ -76,14 +81,17 @@ private:
     uint64_t samplesRendered_ = 0;
     float comfortPhase_ = 0.0f;
     float beatPhase_ = 0.0f;
+    double subPhase_ = 0.0;
+    double rumblePhase_ = 0.0;
+    double subPulsePhase_ = 0.0;
 
     bool micFeedbackEnabled_ = false;
     bool micLowLatency_ = true;
-    float micFeedbackGain_ = 0.28f;
-    float toneMix_ = 0.70f;  // default: tones dominant, mic optional bed
+    float micFeedbackGain_ = 0.18f;
+    float toneMix_ = 0.92f;  // default: tones nearly pure; mic is a light layer
     float micRms_ = 0.0f;
     float micAgcGain_ = 1.0f;
-    float micAgcTarget_ = 0.06f;
+    float micAgcTarget_ = 0.05f;
     float micGateOpen_ = 0.0f;  // smoothed gate [0..1]
 
     ToneOscillator osc_;
@@ -100,11 +108,17 @@ private:
     OnePoleLowPass micLp_;
     OnePoleHighPass micHpTight_;
     OnePoleLowPass micLpTight_;
+    OnePoleLowPass velvetLpL_;
+    OnePoleLowPass velvetLpR_;
+    OnePoleLowPass subSmooth_;
     AudioFrame toneFrame_;
     AudioFrame noiseFrame_;
     AudioFrame dryFrame_;
     AudioFrame micFrame_;
 
+    void ensureWorkBuffers(uint32_t frames, uint32_t sampleRateHz);
+    void blendSubBass(AudioFrame& stereo);
+    void applyVelvetSmooth(AudioFrame& stereo);
     void applyNoiseMask(AudioFrame& stereo);
     void blendKernelNoise(AudioFrame& stereo);
     void applyColorFilter(AudioFrame& stereo);

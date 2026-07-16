@@ -119,6 +119,26 @@ Java_com_manticore_toneflow_NativeToneEngine_nativeSetNoiseBlend(JNIEnv*, jobjec
 }
 
 JNIEXPORT void JNICALL
+Java_com_manticore_toneflow_NativeToneEngine_nativeSetSubLevel(JNIEnv*, jobject,
+                                                               jlong handle,
+                                                               jfloat level)
+{
+    if (auto* player = fromHandle(handle)) {
+        player->setSubLevel(level);
+    }
+}
+
+JNIEXPORT jfloat JNICALL
+Java_com_manticore_toneflow_NativeToneEngine_nativeSubLevel(JNIEnv*, jobject,
+                                                            jlong handle)
+{
+    if (auto* player = fromHandle(handle)) {
+        return player->subLevel();
+    }
+    return 0.0f;
+}
+
+JNIEXPORT void JNICALL
 Java_com_manticore_toneflow_NativeToneEngine_nativeCycleMode(JNIEnv*, jobject,
                                                              jlong handle)
 {

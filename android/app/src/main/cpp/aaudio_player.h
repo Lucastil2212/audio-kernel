@@ -11,10 +11,9 @@
 namespace manticore::android {
 
 /**
- * Low-latency duplex player:
- * - Output callback drives playback
- * - Input callback pushes mic into a lock-free ring (latest samples preferred)
- * - Buffer sizes forced down to one burst when the device allows it
+ * Stable music-path duplex player.
+ * Therapeutic tones need glitch-free buffers — not ultra-low-latency exclusive.
+ * UI telemetry is lock-free so the meter cannot starve the audio callback.
  */
 class AAudioPlayer {
 public:
@@ -36,6 +35,9 @@ public:
     void setFilter(int type);
     void setHarmonicLayers(int layers);
     void setKernelNoiseBlend(float blend);
+    void setSubLevel(float level);
+    void setSubHz(float hz);
+    float subLevel() const;
     void setMicFeedbackEnabled(bool enabled);
     void setMicFeedbackGain(float gain);
     void setToneMix(float mix);
@@ -73,7 +75,8 @@ private:
     bool openOutputStream();
     bool openInputStream();
     void closeStreams();
-    void minimizeBuffer(AAudioStream* stream);
+    void stabilizeBuffer(AAudioStream* stream);
+    void publishTelemetry();
     void ensureScratch(int32_t numFrames);
     void pushMicFrames(const float* data, int32_t numFrames, int32_t channels);
     int32_t popMicFrames(float* dstMono, int32_t numFrames);
@@ -85,17 +88,31 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> micWanted_{false};
     int32_t sampleRate_ = 48000;
-    int32_t framesPerBurst_ = 96;
+    int32_t framesPerBurst_ = 192;
     int32_t inputChannels_ = 1;
 
     // Lock-free SPSC ring of mono float samples (power-of-two).
-    static constexpr size_t kRingPow2 = 13;  // 8192 frames ~170ms @48k
+    static constexpr size_t kRingPow2 = 13;  // 8192 frames
     static constexpr size_t kRingSize = 1u << kRingPow2;
     static constexpr size_t kRingMask = kRingSize - 1;
     std::vector<float> micRing_;
     std::atomic<uint32_t> ringWrite_{0};
     std::atomic<uint32_t> ringRead_{0};
     std::vector<float> micScratch_;
+
+    // Lock-free telemetry for UI (never block the audio callback from UI reads).
+    std::atomic<float> telemCarrier_{210.0f};
+    std::atomic<float> telemBeat_{10.0f};
+    std::atomic<float> telemRms_{0.0f};
+    std::atomic<float> telemPhase_{0.0f};
+    std::atomic<float> telemMicRms_{0.0f};
+    std::atomic<float> telemMicAgc_{1.0f};
+    std::atomic<float> telemSub_{0.2f};
+    std::atomic<int> telemMode_{0};
+    std::atomic<int> telemPerception_{0};
+    std::atomic<int> telemReverb_{0};
+    std::atomic<int> telemFilter_{0};
+    std::atomic<bool> telemMicEn_{false};
 };
 
 }  // namespace manticore::android

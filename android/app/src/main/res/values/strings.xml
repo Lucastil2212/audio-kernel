@@ -12,7 +12,7 @@
     <string name="section_sculpt">Sculpt</string>
     <string name="section_journeys">Journeys</string>
 
-    <string name="mic_hint">Low-latency mic monitor with noise gate + speech-band filtering. Prefer wired headphones to avoid howl and Bluetooth hiss.</string>
+    <string name="mic_hint">Mic off for cleanest tones. Keep Soft sub hum low on phone speakers. Headphones recommended.</string>
     <string name="mic_feedback">Enable live mic</string>
     <string name="mic_gain_default">Mic gain</string>
     <string name="mic_gain">Mic gain  %1$d%%</string>
@@ -31,8 +31,8 @@
     <string name="beat">Beat  %1$.2f Hz</string>
     <string name="harmonics_default">Harmonics</string>
     <string name="harmonics">Harmonics  %1$d</string>
-    <string name="noise_bed_default">Noise bed</string>
-    <string name="noise_bed">Noise bed  %1$.0f%%</string>
+    <string name="noise_bed_default">Soft sub hum</string>
+    <string name="noise_bed">Soft sub hum  %1$.0f%%</string>
 
     <string name="mode">Mode</string>
     <string name="perception">Field</string>

@@ -5,164 +5,122 @@
 namespace manticore::toneflow {
 namespace {
 
-ToneParams make(float carrier, float beat, BeatMode mode = BeatMode::Binaural,
-                PerceptionMode perception = PerceptionMode::Standard,
-                ReverbPreset reverb = ReverbPreset::Off, int layers = 1,
-                float noiseBlend = 0.10f, float volume = 0.12f,
-                float fadeIn = 12.0f, FilterType filter = FilterType::Off)
+/**
+ * Soothing pure-sine presets.
+ * Quiet carriers, long fades, gentle continuous sub hum (phone-safe ~50 Hz).
+ */
+ToneParams make(float carrier, float beat, float volume = 0.18f,
+                float fadeIn = 5.0f, float subLevel = 0.15f, float subHz = 52.0f,
+                BeatMode mode = BeatMode::Binaural)
 {
     ToneParams p;
     p.carrierHz = carrier;
     p.beatHz = beat;
     p.mode = mode;
-    p.perception = perception;
-    p.reverb = reverb;
-    p.harmonicLayers = layers;
-    p.kernelNoiseBlend = noiseBlend;
+    p.perception = PerceptionMode::Standard;
+    p.reverb = ReverbPreset::Off;
+    p.harmonicLayers = 1;
+    p.kernelNoiseBlend = 0.0f;
     p.masterVolume = volume;
     p.fadeInSec = fadeIn;
-    p.comfortModDepth = 0.04f;
-    p.filter = filter;
-    p.filterMix = filter == FilterType::Off ? 0.0f : 0.85f;
+    p.comfortModDepth = 0.0f;
+    p.filter = FilterType::Off;
+    p.filterMix = 0.0f;
     p.noiseMask = NoiseMask::None;
-    p.noiseLevelDbfs = -30.0f;
+    p.noiseLevelDbfs = -36.0f;
+    p.subLevel = subLevel;
+    p.subHz = subHz;
     return p;
 }
 
 /**
- * Inspired by Monroe Institute Focus / Gateway naming — not Hemi-Sync®.
- * Frequencies are exploratory approximations for personal perceptual practice.
+ * Calming / healing journeys — exploratory naming only, not medical.
+ * Tuned for soft listening on headphones and phone speakers.
  */
 const TonePreset kPresets[] = {
-    // --- Core bands ---
-    {"alpha_calm", "Alpha — Calm (10 Hz)",
-     "Relaxed alertness; warm carrier, soft band focus.", "calm",
-     make(210.0f, 10.0f, BeatMode::Binaural, PerceptionMode::Standard,
-          ReverbPreset::Off, 1, 0.08f, 0.11f, 14.0f, FilterType::SoftBand),
-     15},
-    {"theta_meditate", "Theta — Meditate (6 Hz)",
-     "Quieted attention; deep-well filter, long fade.", "deep",
-     make(185.0f, 6.0f, BeatMode::Binaural, PerceptionMode::Standard,
-          ReverbPreset::Off, 1, 0.12f, 0.11f, 16.0f, FilterType::DeepWell),
-     20},
-    {"delta_sleep", "Delta — Deep Rest (2.5 Hz)",
-     "Slow-wave band with breath pacing and velvet warmth.", "deep",
-     make(160.0f, 2.5f, BeatMode::Binaural, PerceptionMode::Breath,
-          ReverbPreset::Room, 1, 0.16f, 0.09f, 20.0f, FilterType::Warm),
-     30},
-    {"beta_deepwork", "Beta — Deep Work (16 Hz)",
-     "Alert focus; presence lift, minimal bed.", "focus",
-     make(230.0f, 16.0f, BeatMode::Binaural, PerceptionMode::Standard,
-          ReverbPreset::Off, 1, 0.05f, 0.12f, 8.0f, FilterType::Presence),
-     15},
-    {"gamma_focus", "Gamma — Peak Focus (40 Hz)",
-     "40 Hz isochronic pulses with crystal air.", "focus",
-     make(220.0f, 40.0f, BeatMode::Isochronic, PerceptionMode::Standard,
-          ReverbPreset::Off, 1, 0.04f, 0.10f, 8.0f, FilterType::Crystal),
-     10},
-    {"schumann", "Schumann (7.83 Hz)",
-     "Earth resonance beat; soft shimmer + warm room.", "explore",
-     make(200.0f, 7.83f, BeatMode::Binaural, PerceptionMode::Shimmer,
-          ReverbPreset::Room, 1, 0.10f, 0.11f, 14.0f, FilterType::Warm),
-     20},
+    // --- Core soothe ---
+    {"alpha_calm", "Alpha Soothe (10 Hz)",
+     "Clean pure-sine alpha. Stable playback path.", "calm",
+     make(200.0f, 10.0f, 0.18f, 5.0f, 0.12f, 52.0f), 20},
+    {"theta_meditate", "Theta Cradle (6 Hz)",
+     "Quiet theta cradle with soft body hum.", "deep",
+     make(180.0f, 6.0f, 0.17f, 6.0f, 0.15f, 50.0f), 25},
+    {"delta_sleep", "Delta Nest (2.5 Hz)",
+     "Soft slow-wave nest for rest.", "deep",
+     make(150.0f, 2.5f, 0.15f, 8.0f, 0.18f, 48.0f), 35},
+    {"schumann", "Schumann Soft (7.83 Hz)",
+     "Earth-band beat, warm and clean.", "heal",
+     make(196.0f, 7.83f, 0.18f, 5.0f, 0.15f, 52.0f), 20},
+    {"beta_soft", "Beta Soft Focus (14 Hz)",
+     "Light alert focus without harshness.", "focus",
+     make(220.0f, 14.0f, 0.18f, 4.0f, 0.08f, 55.0f), 15},
 
-    // --- Hemi-Sync inspired Focus ladder ---
-    {"hemisync_focus10", "Focus 10 — Mind Awake / Body Asleep",
-     "Inspired by Focus 10 (not Hemi-Sync®). Theta + harmonic bed.", "hemisync",
-     make(185.0f, 6.0f, BeatMode::Binaural, PerceptionMode::Standard,
-          ReverbPreset::Off, 2, 0.11f, 0.11f, 16.0f, FilterType::Warm),
-     20},
-    {"hemisync_focus12", "Focus 12 — Expanded Awareness",
-     "Inspired by Focus 12. High-theta with expand perception.", "hemisync",
-     make(185.0f, 7.0f, BeatMode::Binaural, PerceptionMode::Expand,
-          ReverbPreset::Off, 2, 0.11f, 0.11f, 16.0f, FilterType::SoftBand),
-     25},
-    {"hemisync_focus15", "Focus 15 — No Time",
-     "Inspired by Focus 15. Deep theta lattice; sparse time feel.", "hemisync",
-     make(170.0f, 4.0f, BeatMode::Binaural, PerceptionMode::Lattice,
-          ReverbPreset::Chamber, 3, 0.14f, 0.10f, 18.0f, FilterType::DeepWell),
-     30},
-    {"hemisync_focus21", "Focus 21 — Bridge",
-     "Inspired by Focus 21. Deep theta shimmer into restrained cave.", "hemisync",
-     make(170.0f, 4.5f, BeatMode::Binaural, PerceptionMode::Shimmer,
-          ReverbPreset::Cave, 2, 0.14f, 0.10f, 18.0f, FilterType::Warm),
-     30},
-    {"hemisync_focus27", "Focus 27 — Other Energy",
-     "Inspired by Focus 27. Lattice + void swell; experimental journey.",
-     "hemisync",
-     make(165.0f, 3.5f, BeatMode::Binaural, PerceptionMode::Void, ReverbPreset::Cave,
-          3, 0.16f, 0.09f, 22.0f, FilterType::DeepWell),
-     35},
-    {"gateway_ascent", "Gateway Ascent",
-     "Progressive theta path with consciousness lattice (inspired, not official).",
-     "hemisync",
-     make(180.0f, 5.5f, BeatMode::Binaural, PerceptionMode::Lattice,
-          ReverbPreset::Chamber, 3, 0.13f, 0.10f, 20.0f, FilterType::SoftBand),
-     30},
-    {"hemi_bridge", "Hemispheric Bridge",
-     "Soft ear alternate with 3-layer harmonic bed — bridge L/R attention.",
-     "hemisync",
-     make(200.0f, 8.0f, BeatMode::Binaural, PerceptionMode::Alternate,
-          ReverbPreset::Room, 3, 0.10f, 0.11f, 14.0f, FilterType::Presence),
-     20},
+    // --- Soft body ---
+    {"soft_hum", "Soft Body Hum",
+     "Theta tones over a continuous soothing 50 Hz hum.", "calm",
+     make(170.0f, 5.0f, 0.17f, 5.0f, 0.22f, 50.0f), 20},
+    {"warm_bath", "Warm Tone Bath",
+     "Low alpha with a light sub bed.", "calm",
+     make(190.0f, 8.0f, 0.17f, 6.0f, 0.18f, 52.0f), 20},
+    {"deep_cradle", "Deep Cradle",
+     "Delta-theta border; quiet and enveloping.", "deep",
+     make(160.0f, 3.5f, 0.15f, 7.0f, 0.20f, 48.0f), 30},
 
-    // --- Higher-consciousness / perceptual ---
-    {"higher_self", "Higher Self Field (5 Hz)",
-     "Low-theta expand field; warm filter, long ceremonial fade.", "conscious",
-     make(175.0f, 5.0f, BeatMode::Binaural, PerceptionMode::Expand,
-          ReverbPreset::Chamber, 2, 0.12f, 0.10f, 20.0f, FilterType::Warm),
-     25},
-    {"unity_pulse", "Unity Pulse (7 Hz)",
-     "High-theta lattice for coherent whole-field listening.", "conscious",
-     make(190.0f, 7.0f, BeatMode::Binaural, PerceptionMode::Lattice,
-          ReverbPreset::Room, 2, 0.10f, 0.11f, 16.0f, FilterType::SoftBand),
-     20},
-    {"void_journey", "Void Journey (3 Hz)",
-     "Deep delta void swells — sparse peaks, deep-well sculpting.", "conscious",
-     make(150.0f, 3.0f, BeatMode::Binaural, PerceptionMode::Void, ReverbPreset::Cave,
-          1, 0.18f, 0.08f, 24.0f, FilterType::DeepWell),
-     30},
-    {"crystal_mind", "Crystal Mind (12 Hz)",
-     "High-alpha / low-beta crystal air for lucid clarity.", "conscious",
-     make(240.0f, 12.0f, BeatMode::Binaural, PerceptionMode::Shimmer,
-          ReverbPreset::Off, 1, 0.06f, 0.11f, 10.0f, FilterType::Crystal),
-     15},
-    {"rotate_theta", "Rotating Theta (6 Hz)",
-     "Mid-theta with slow spatial rotation.", "explore",
-     make(180.0f, 6.0f, BeatMode::Binaural, PerceptionMode::Rotate,
-          ReverbPreset::Off, 1, 0.10f, 0.11f, 14.0f, FilterType::Warm),
-     20},
-    {"shimmer_meditation", "Shimmer Alpha–Theta (8 Hz)",
-     "Border band with ethereal shimmer.", "calm",
-     make(195.0f, 8.0f, BeatMode::Binaural, PerceptionMode::Shimmer,
-          ReverbPreset::Chamber, 1, 0.10f, 0.11f, 14.0f, FilterType::SoftBand),
-     20},
-    {"breath_alpha", "Breath Sync Alpha (10 Hz)",
-     "Mid-alpha with ~5/min breath swells.", "calm",
-     make(210.0f, 10.0f, BeatMode::Binaural, PerceptionMode::Breath,
-          ReverbPreset::Off, 1, 0.08f, 0.11f, 14.0f, FilterType::Warm),
-     15},
-    {"float_cave", "Float — Cave (5 Hz)",
-     "Low-theta float in a restrained cave.", "deep",
-     make(175.0f, 5.0f, BeatMode::Binaural, PerceptionMode::Breath,
-          ReverbPreset::Cave, 1, 0.15f, 0.10f, 18.0f, FilterType::DeepWell),
-     25},
-    {"isochronic_alpha", "Isochronic Alpha (10 Hz)",
-     "Soft-gated isochronic alpha for speakers.", "explore",
-     make(210.0f, 10.0f, BeatMode::Isochronic, PerceptionMode::Standard,
-          ReverbPreset::Off, 1, 0.06f, 0.11f, 10.0f, FilterType::Presence),
-     15},
-    {"noise_bath_calm", "Noise Bath — Calm",
-     "Pink kernel bed under warm alpha.", "calm",
-     make(210.0f, 10.0f, BeatMode::Binaural, PerceptionMode::Breath,
-          ReverbPreset::Room, 1, 0.24f, 0.10f, 16.0f, FilterType::Warm),
-     15},
-    {"free_play", "Free Play — Custom",
-     "Start here and sculpt carrier, beat, filter, and perception live.",
-     "explore",
-     make(200.0f, 7.83f, BeatMode::Binaural, PerceptionMode::Expand,
-          ReverbPreset::Room, 2, 0.10f, 0.11f, 8.0f, FilterType::SoftBand),
-     0},
+    // --- Healing (quiet) ---
+    {"heal_174", "174 Hz — Soft Foundation",
+     "Soft 174 Hz sine with gentle hum.", "heal",
+     make(174.0f, 4.0f, 0.17f, 5.0f, 0.16f, 48.0f), 20},
+    {"heal_285", "285 Hz — Soft Renewal",
+     "Quiet renewal field.", "heal",
+     make(285.0f, 5.0f, 0.17f, 5.0f, 0.12f, 52.0f), 20},
+    {"heal_396", "396 Hz — Soft Release",
+     "Soft release field.", "heal",
+     make(396.0f, 6.0f, 0.17f, 5.0f, 0.12f, 52.0f), 20},
+    {"heal_417", "417 Hz — Soft Change",
+     "Gentle change field with Schumann beat.", "heal",
+     make(417.0f, 7.83f, 0.17f, 5.0f, 0.12f, 52.0f), 20},
+    {"heal_528", "528 Hz — Soft Love",
+     "Quiet 528 Hz with feather-light hum.", "heal",
+     make(528.0f, 10.0f, 0.16f, 5.0f, 0.10f, 55.0f), 20},
+    {"heal_639", "639 Hz — Soft Connection",
+     "Soft connection field.", "heal",
+     make(639.0f, 10.0f, 0.15f, 5.0f, 0.08f, 55.0f), 20},
+    {"heal_741", "741 Hz — Soft Clarity",
+     "Light clarity tone.", "heal",
+     make(741.0f, 12.0f, 0.15f, 4.0f, 0.06f, 58.0f), 15},
+    {"heal_852", "852 Hz — Soft Intuition",
+     "Quiet intuition field.", "heal",
+     make(852.0f, 8.0f, 0.14f, 5.0f, 0.06f, 55.0f), 20},
+    {"heal_963", "963 Hz — Soft Unity",
+     "Very soft high unity tone.", "heal",
+     make(963.0f, 6.0f, 0.14f, 5.0f, 0.08f, 52.0f), 20},
+
+    // --- Focus ladder (soft) ---
+    {"hemisync_focus10", "Focus 10 — Soft Theta",
+     "Inspired by Focus 10. Quiet coherent theta.", "hemisync",
+     make(180.0f, 6.0f, 0.17f, 6.0f, 0.15f, 50.0f), 25},
+    {"hemisync_focus12", "Focus 12 — Soft Expand",
+     "Inspired by Focus 12. Soft 7 Hz field.", "hemisync",
+     make(180.0f, 7.0f, 0.17f, 6.0f, 0.14f, 50.0f), 25},
+    {"hemisync_focus15", "Focus 15 — Soft Deep",
+     "Inspired by Focus 15. Deep quiet theta.", "hemisync",
+     make(165.0f, 4.0f, 0.15f, 7.0f, 0.18f, 48.0f), 30},
+    {"hemisync_focus21", "Focus 21 — Soft Bridge",
+     "Inspired by Focus 21. Soft bridge band.", "hemisync",
+     make(165.0f, 4.5f, 0.15f, 7.0f, 0.16f, 48.0f), 30},
+    {"hemisync_focus27", "Focus 27 — Soft Journey",
+     "Inspired by Focus 27. Deep quiet journey.", "hemisync",
+     make(160.0f, 3.5f, 0.14f, 8.0f, 0.18f, 48.0f), 35},
+    {"gateway_ascent", "Gateway — Soft Ascent",
+     "Gentle progressive theta path.", "hemisync",
+     make(175.0f, 5.5f, 0.15f, 7.0f, 0.15f, 50.0f), 30},
+
+    {"isochronic_soft", "Isochronic Soft Alpha",
+     "Soft-gated isochronic (speakers OK).", "explore",
+     make(200.0f, 10.0f, 0.16f, 4.0f, 0.12f, 52.0f, BeatMode::Isochronic), 15},
+    {"free_play", "Free Play — Soft Start",
+     "Clean start. Keep Soft sub hum low for purity.", "explore",
+     make(196.0f, 7.83f, 0.18f, 3.0f, 0.12f, 52.0f), 0},
 };
 
 }  // namespace

@@ -30,7 +30,7 @@ AAudioPlayer::AAudioPlayer()
 
 AAudioPlayer::~AAudioPlayer() { stop(); }
 
-void AAudioPlayer::minimizeBuffer(AAudioStream* stream)
+void AAudioPlayer::stabilizeBuffer(AAudioStream* stream)
 {
     if (stream == nullptr) {
         return;
@@ -39,12 +39,33 @@ void AAudioPlayer::minimizeBuffer(AAudioStream* stream)
     if (burst <= 0) {
         return;
     }
-    // One burst is the lowest stable size on most devices.
+    // 4 bursts of slack — prevents underrun crackle that sounds like static.
+    const int32_t target = burst * 4;
     const aaudio_result_t setResult =
-        AAudioStream_setBufferSizeInFrames(stream, burst);
+        AAudioStream_setBufferSizeInFrames(stream, target);
     const int32_t actual = AAudioStream_getBufferSizeInFrames(stream);
-    LOGI("buffer minimize: burst=%d set=%s actual=%d", burst,
+    LOGI("buffer stabilize: burst=%d target=%d set=%s actual=%d", burst, target,
          AAudio_convertResultToText(setResult), actual);
+}
+
+void AAudioPlayer::publishTelemetry()
+{
+    telemCarrier_.store(engine_.carrierHz(), std::memory_order_relaxed);
+    telemBeat_.store(engine_.beatHz(), std::memory_order_relaxed);
+    telemRms_.store(engine_.currentRms(), std::memory_order_relaxed);
+    telemPhase_.store(engine_.beatPhase(), std::memory_order_relaxed);
+    telemMicRms_.store(engine_.micRms(), std::memory_order_relaxed);
+    telemMicAgc_.store(engine_.micAgcGain(), std::memory_order_relaxed);
+    telemSub_.store(engine_.subLevel(), std::memory_order_relaxed);
+    telemMode_.store(static_cast<int>(engine_.params().mode),
+                     std::memory_order_relaxed);
+    telemPerception_.store(static_cast<int>(engine_.params().perception),
+                           std::memory_order_relaxed);
+    telemReverb_.store(static_cast<int>(engine_.params().reverb),
+                       std::memory_order_relaxed);
+    telemFilter_.store(static_cast<int>(engine_.params().filter),
+                       std::memory_order_relaxed);
+    telemMicEn_.store(engine_.micFeedbackEnabled(), std::memory_order_relaxed);
 }
 
 bool AAudioPlayer::openOutputStream()
@@ -60,41 +81,35 @@ bool AAudioPlayer::openOutputStream()
     AAudioStreamBuilder_setSampleRate(builder, 48000);
     AAudioStreamBuilder_setChannelCount(builder, 2);
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_FLOAT);
+    // Stable music path — exclusive/tiny buffers caused underrun "static".
     AAudioStreamBuilder_setPerformanceMode(builder,
-                                           AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
-    // Game usage tends to prefer the fast mixer path on many OEMs.
-    AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_GAME);
+                                           AAUDIO_PERFORMANCE_MODE_NONE);
+    AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_MEDIA);
     AAudioStreamBuilder_setContentType(builder, AAUDIO_CONTENT_TYPE_MUSIC);
-    // Keep callbacks small and regular.
     AAudioStreamBuilder_setDataCallback(builder, outputCallback, this);
     AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
-    // Ask for small callbacks; device may round to its burst.
-    AAudioStreamBuilder_setFramesPerDataCallback(builder, 64);
-    AAudioStreamBuilder_setBufferCapacityInFrames(builder, 256);
+    // Let the device choose a healthy callback size.
+    AAudioStreamBuilder_setFramesPerDataCallback(builder, 0);
+    AAudioStreamBuilder_setBufferCapacityInFrames(builder, 0);
 
+    // Prefer shared mixer for glitch-free sustained sine tones.
     if (!tryOpenWithSharing(builder, &outputStream_,
-                            AAUDIO_SHARING_MODE_EXCLUSIVE) &&
+                            AAUDIO_SHARING_MODE_SHARED) &&
         !tryOpenWithSharing(builder, &outputStream_,
-                            AAUDIO_SHARING_MODE_SHARED)) {
-        // Retry without capacity hints if the OEM rejects them.
-        AAudioStreamBuilder_setFramesPerDataCallback(builder, 0);
-        AAudioStreamBuilder_setBufferCapacityInFrames(builder, 0);
-        if (!tryOpenWithSharing(builder, &outputStream_,
-                                AAUDIO_SHARING_MODE_SHARED)) {
-            LOGE("open output failed");
-            AAudioStreamBuilder_delete(builder);
-            outputStream_ = nullptr;
-            return false;
-        }
+                            AAUDIO_SHARING_MODE_EXCLUSIVE)) {
+        LOGE("open output failed");
+        AAudioStreamBuilder_delete(builder);
+        outputStream_ = nullptr;
+        return false;
     }
     AAudioStreamBuilder_delete(builder);
 
     sampleRate_ = AAudioStream_getSampleRate(outputStream_);
     framesPerBurst_ = AAudioStream_getFramesPerBurst(outputStream_);
     if (framesPerBurst_ <= 0) {
-        framesPerBurst_ = 96;
+        framesPerBurst_ = 192;
     }
-    minimizeBuffer(outputStream_);
+    stabilizeBuffer(outputStream_);
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -103,17 +118,19 @@ bool AAudioPlayer::openOutputStream()
         const float micGain = engine_.micFeedbackGain();
         const float toneMix = engine_.toneMix();
         engine_.prepare(static_cast<uint32_t>(sampleRate_),
-                        static_cast<uint32_t>(framesPerBurst_));
+                        static_cast<uint32_t>(framesPerBurst_ * 2));
         engine_.setParams(prior);
         engine_.setMicFeedbackEnabled(micEn);
         engine_.setMicFeedbackGain(micGain);
         engine_.setToneMix(toneMix);
         engine_.setMicLowLatency(true);
         engine_.setPlaying(true);
+        publishTelemetry();
     }
 
-    LOGI("output opened: sr=%d burst=%d sharing=%d", sampleRate_,
-         framesPerBurst_, AAudioStream_getSharingMode(outputStream_));
+    LOGI("output opened: sr=%d burst=%d sharing=%d buf=%d", sampleRate_,
+         framesPerBurst_, AAudioStream_getSharingMode(outputStream_),
+         AAudioStream_getBufferSizeInFrames(outputStream_));
     return true;
 }
 
@@ -135,12 +152,11 @@ bool AAudioPlayer::openInputStream()
     AAudioStreamBuilder_setChannelCount(builder, 1);
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_FLOAT);
     AAudioStreamBuilder_setPerformanceMode(builder,
-                                           AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
-    // Voice recognition: light OS noise conditioning without telephony AEC delay.
+                                           AAUDIO_PERFORMANCE_MODE_NONE);
     AAudioStreamBuilder_setInputPreset(builder,
                                        AAUDIO_INPUT_PRESET_VOICE_RECOGNITION);
-    AAudioStreamBuilder_setFramesPerDataCallback(builder, framesPerBurst_);
-    AAudioStreamBuilder_setBufferCapacityInFrames(builder, framesPerBurst_ * 2);
+    AAudioStreamBuilder_setFramesPerDataCallback(builder, 0);
+    AAudioStreamBuilder_setBufferCapacityInFrames(builder, 0);
     AAudioStreamBuilder_setDataCallback(builder, inputCallback, this);
     AAudioStreamBuilder_setErrorCallback(builder, errorCallback, this);
 
@@ -159,7 +175,7 @@ bool AAudioPlayer::openInputStream()
     if (inputChannels_ <= 0) {
         inputChannels_ = 1;
     }
-    minimizeBuffer(inputStream_);
+    stabilizeBuffer(inputStream_);
 
     // Drop any stale samples so feedback starts from "now".
     ringWrite_.store(0, std::memory_order_relaxed);
@@ -320,11 +336,14 @@ aaudio_data_callback_result_t AAudioPlayer::outputCallback(AAudioStream*,
         micCh = 1;
     }
 
-    // Keep lock hold short: render under lock (engine not thread-safe yet).
-    std::lock_guard<std::mutex> lock(self->mutex_);
-    self->engine_.renderInterleavedWithMic(out, micPtr,
-                                           static_cast<uint32_t>(numFrames),
-                                           micCh);
+    // Render under lock; UI telemetry reads atomics and never contends here.
+    {
+        std::lock_guard<std::mutex> lock(self->mutex_);
+        self->engine_.renderInterleavedWithMic(out, micPtr,
+                                               static_cast<uint32_t>(numFrames),
+                                               micCh);
+        self->publishTelemetry();
+    }
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
@@ -345,6 +364,7 @@ void AAudioPlayer::setPresetIndex(int index)
         engine_.reset();
         engine_.setMicLowLatency(true);
         engine_.setPlaying(true);
+        publishTelemetry();
     }
 }
 
@@ -364,36 +384,42 @@ void AAudioPlayer::setCarrierHz(float hz)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     engine_.setCarrierHz(hz);
+    publishTelemetry();
 }
 
 void AAudioPlayer::setBeatHz(float hz)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     engine_.setBeatHz(hz);
+    publishTelemetry();
 }
 
 void AAudioPlayer::setMode(int mode)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     engine_.setMode(static_cast<toneflow::BeatMode>(mode));
+    publishTelemetry();
 }
 
 void AAudioPlayer::setPerception(int mode)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     engine_.setPerception(static_cast<toneflow::PerceptionMode>(mode));
+    publishTelemetry();
 }
 
 void AAudioPlayer::setReverb(int preset)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     engine_.setReverb(static_cast<toneflow::ReverbPreset>(preset));
+    publishTelemetry();
 }
 
 void AAudioPlayer::setFilter(int type)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     engine_.setFilter(static_cast<toneflow::FilterType>(type));
+    publishTelemetry();
 }
 
 void AAudioPlayer::setHarmonicLayers(int layers)
@@ -406,6 +432,24 @@ void AAudioPlayer::setKernelNoiseBlend(float blend)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     engine_.setKernelNoiseBlend(blend);
+}
+
+void AAudioPlayer::setSubLevel(float level)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    engine_.setSubLevel(level);
+    publishTelemetry();
+}
+
+void AAudioPlayer::setSubHz(float hz)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    engine_.setSubHz(hz);
+}
+
+float AAudioPlayer::subLevel() const
+{
+    return telemSub_.load(std::memory_order_relaxed);
 }
 
 void AAudioPlayer::setMicFeedbackEnabled(bool enabled)
@@ -428,9 +472,8 @@ void AAudioPlayer::setMicFeedbackEnabled(bool enabled)
             std::lock_guard<std::mutex> lock(mutex_);
             engine_.setMicFeedbackEnabled(false);
         } else {
-            // Re-minimize buffers when enabling live path.
-            minimizeBuffer(outputStream_);
-            minimizeBuffer(inputStream_);
+            stabilizeBuffer(outputStream_);
+            stabilizeBuffer(inputStream_);
         }
     } else if (inputStream_ != nullptr) {
         AAudioStream_requestStop(inputStream_);
@@ -455,24 +498,28 @@ void AAudioPlayer::cycleMode()
 {
     std::lock_guard<std::mutex> lock(mutex_);
     engine_.setMode(toneflow::cycleBeatMode(engine_.params().mode));
+    publishTelemetry();
 }
 
 void AAudioPlayer::cyclePerception()
 {
     std::lock_guard<std::mutex> lock(mutex_);
     engine_.setPerception(toneflow::cyclePerception(engine_.params().perception));
+    publishTelemetry();
 }
 
 void AAudioPlayer::cycleReverb()
 {
     std::lock_guard<std::mutex> lock(mutex_);
     engine_.setReverb(toneflow::cycleReverb(engine_.params().reverb));
+    publishTelemetry();
 }
 
 void AAudioPlayer::cycleFilter()
 {
     std::lock_guard<std::mutex> lock(mutex_);
     engine_.setFilter(toneflow::cycleFilter(engine_.params().filter));
+    publishTelemetry();
 }
 
 int AAudioPlayer::presetCount() const
@@ -494,68 +541,61 @@ const char* AAudioPlayer::presetDescription(int index) const
 
 const char* AAudioPlayer::modeLabel() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return toneflow::beatModeLabel(engine_.params().mode);
+    return toneflow::beatModeLabel(
+        static_cast<toneflow::BeatMode>(telemMode_.load(std::memory_order_relaxed)));
 }
 
 const char* AAudioPlayer::perceptionLabel() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return toneflow::perceptionLabel(engine_.params().perception);
+    return toneflow::perceptionLabel(static_cast<toneflow::PerceptionMode>(
+        telemPerception_.load(std::memory_order_relaxed)));
 }
 
 const char* AAudioPlayer::reverbLabel() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return toneflow::reverbLabel(engine_.params().reverb);
+    return toneflow::reverbLabel(static_cast<toneflow::ReverbPreset>(
+        telemReverb_.load(std::memory_order_relaxed)));
 }
 
 const char* AAudioPlayer::filterLabel() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return toneflow::filterLabel(engine_.params().filter);
+    return toneflow::filterLabel(static_cast<toneflow::FilterType>(
+        telemFilter_.load(std::memory_order_relaxed)));
 }
 
 float AAudioPlayer::carrierHz() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return engine_.carrierHz();
+    return telemCarrier_.load(std::memory_order_relaxed);
 }
 
 float AAudioPlayer::beatHz() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return engine_.beatHz();
+    return telemBeat_.load(std::memory_order_relaxed);
 }
 
 float AAudioPlayer::currentRms() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return engine_.currentRms();
+    return telemRms_.load(std::memory_order_relaxed);
 }
 
 float AAudioPlayer::beatPhase() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return engine_.beatPhase();
+    return telemPhase_.load(std::memory_order_relaxed);
 }
 
 float AAudioPlayer::micRms() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return engine_.micRms();
+    return telemMicRms_.load(std::memory_order_relaxed);
 }
 
 float AAudioPlayer::micAgcGain() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return engine_.micAgcGain();
+    return telemMicAgc_.load(std::memory_order_relaxed);
 }
 
 bool AAudioPlayer::micFeedbackEnabled() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return engine_.micFeedbackEnabled();
+    return telemMicEn_.load(std::memory_order_relaxed);
 }
 
 }  // namespace manticore::android

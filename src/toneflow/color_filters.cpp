@@ -90,6 +90,8 @@ void ColorFilterBank::prepare(uint32_t sampleRateHz)
 {
     sampleRateHz_ = sampleRateHz == 0 ? 48000 : sampleRateHz;
     rebuild();
+    rebuildBloom();
+    reset();
 }
 
 void ColorFilterBank::setType(FilterType type)
@@ -97,68 +99,81 @@ void ColorFilterBank::setType(FilterType type)
     if (type_ != type) {
         type_ = type;
         rebuild();
-        reset();
+        // Keep running state — only zero when explicitly reset().
     }
 }
 
 void ColorFilterBank::setToneHz(float centerHz)
 {
     const float c = clamp(centerHz, 100.0f, 1000.0f);
-    if (std::fabs(c - toneHz_) > 2.0f) {
+    if (std::fabs(c - toneHz_) > 0.5f) {
         toneHz_ = c;
-        if (type_ == FilterType::SoftBand || type_ == FilterType::Presence) {
+        rebuildBloom();
+        if (type_ == FilterType::SoftBand || type_ == FilterType::Presence ||
+            type_ == FilterType::Warm || type_ == FilterType::DeepWell ||
+            type_ == FilterType::Crystal) {
             rebuild();
         }
     }
 }
 
-void ColorFilterBank::rebuild()
+void ColorFilterBank::rebuildBloom()
 {
     const float sr = static_cast<float>(sampleRateHz_);
-    // Bypass identity
-    leftA_ = Biquad{};
-    leftB_ = Biquad{};
-    rightA_ = Biquad{};
-    rightB_ = Biquad{};
+    // Velvet low-pass only — no ringing peaks (those sounded staticy).
+    bloomL_.setLowPass(2400.0f, 0.707f, sr);
+    bloomR_.setLowPass(2400.0f, 0.707f, sr);
+}
+
+void ColorFilterBank::rebuild()
+{
+    // Update coefficients only — never wipe z1/z2 (that caused zipper/static).
+    const float sr = static_cast<float>(sampleRateHz_);
 
     switch (type_) {
         case FilterType::Warm:
-            leftA_.setLowPass(2200.0f, 0.707f, sr);
-            rightA_.setLowPass(2200.0f, 0.707f, sr);
-            leftB_.setHighPass(60.0f, 0.707f, sr);
-            rightB_.setHighPass(60.0f, 0.707f, sr);
+            leftA_.setLowPass(2800.0f, 0.707f, sr);
+            rightA_.setLowPass(2800.0f, 0.707f, sr);
+            leftB_.setPeaking(toneHz_, 0.85f, 1.2f, sr);
+            rightB_.setPeaking(toneHz_, 0.85f, 1.2f, sr);
             break;
         case FilterType::Presence:
-            leftA_.setPeaking(std::max(toneHz_ * 1.5f, 400.0f), 1.0f, 2.5f, sr);
-            rightA_.setPeaking(std::max(toneHz_ * 1.5f, 400.0f), 1.0f, 2.5f, sr);
-            leftB_.setLowPass(5000.0f, 0.7f, sr);
-            rightB_.setLowPass(5000.0f, 0.7f, sr);
+            leftA_.setPeaking(toneHz_, 0.9f, 1.8f, sr);
+            rightA_.setPeaking(toneHz_, 0.9f, 1.8f, sr);
+            leftB_.setLowPass(3600.0f, 0.707f, sr);
+            rightB_.setLowPass(3600.0f, 0.707f, sr);
             break;
         case FilterType::SoftBand:
-            leftA_.setBandPass(toneHz_, 1.4f, sr);
-            rightA_.setBandPass(toneHz_, 1.4f, sr);
-            leftB_.setLowPass(toneHz_ * 4.0f, 0.7f, sr);
-            rightB_.setLowPass(toneHz_ * 4.0f, 0.7f, sr);
+            // Soft body around carrier — low Q, gentle gain (healing warmth).
+            leftA_.setPeaking(toneHz_, 0.8f, 1.6f, sr);
+            rightA_.setPeaking(toneHz_, 0.8f, 1.6f, sr);
+            leftB_.setLowPass(2600.0f, 0.707f, sr);
+            rightB_.setLowPass(2600.0f, 0.707f, sr);
             break;
         case FilterType::Crystal:
-            leftA_.setHighPass(180.0f, 0.8f, sr);
-            rightA_.setHighPass(180.0f, 0.8f, sr);
-            leftB_.setPeaking(3200.0f, 0.9f, 1.8f, sr);
-            rightB_.setPeaking(3200.0f, 0.9f, 1.8f, sr);
+            leftA_.setHighPass(90.0f, 0.707f, sr);
+            rightA_.setHighPass(90.0f, 0.707f, sr);
+            leftB_.setLowPass(4200.0f, 0.707f, sr);
+            rightB_.setLowPass(4200.0f, 0.707f, sr);
             break;
         case FilterType::DeepWell:
-            leftA_.setLowPass(900.0f, 0.9f, sr);
-            rightA_.setLowPass(900.0f, 0.9f, sr);
-            leftB_.setHighPass(40.0f, 0.7f, sr);
-            rightB_.setHighPass(40.0f, 0.7f, sr);
+            leftA_.setLowPass(1400.0f, 0.8f, sr);
+            rightA_.setLowPass(1400.0f, 0.8f, sr);
+            leftB_.setPeaking(toneHz_, 0.75f, 1.4f, sr);
+            rightB_.setPeaking(toneHz_, 0.75f, 1.4f, sr);
             break;
         case FilterType::NotchHum:
-            leftA_.setNotch(60.0f, 8.0f, sr);
-            rightA_.setNotch(60.0f, 8.0f, sr);
-            leftB_.setLowPass(2800.0f, 0.7f, sr);
-            rightB_.setLowPass(2800.0f, 0.7f, sr);
+            leftA_.setNotch(60.0f, 6.0f, sr);
+            rightA_.setNotch(60.0f, 6.0f, sr);
+            leftB_.setLowPass(3000.0f, 0.707f, sr);
+            rightB_.setLowPass(3000.0f, 0.707f, sr);
             break;
         default:
+            // Identity (unity gain)
+            leftA_ = Biquad{};
+            leftB_ = Biquad{};
+            rightA_ = Biquad{};
+            rightB_ = Biquad{};
             break;
     }
 }
@@ -169,6 +184,24 @@ void ColorFilterBank::reset()
     leftB_.reset();
     rightA_.reset();
     rightB_.reset();
+    bloomL_.reset();
+    bloomR_.reset();
+}
+
+void ColorFilterBank::processBloom(AudioFrame& stereo, float mix)
+{
+    if (!stereo.isStereo() || mix <= 0.0f) {
+        return;
+    }
+    // Full velvet smooth — removes grit while keeping the wave coherent.
+    const float wet = clamp(mix, 0.0f, 1.0f);
+    const float dry = 1.0f - wet;
+    for (size_t i = 0; i < stereo.framesPerChannel(); ++i) {
+        const float l = stereo.get(i, 0);
+        const float r = stereo.get(i, 1);
+        stereo.set(i, 0, dry * l + wet * bloomL_.process(l));
+        stereo.set(i, 1, dry * r + wet * bloomR_.process(r));
+    }
 }
 
 void ColorFilterBank::process(AudioFrame& stereo)

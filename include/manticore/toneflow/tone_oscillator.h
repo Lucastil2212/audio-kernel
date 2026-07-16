@@ -15,15 +15,13 @@ public:
                 float beatStart, float beatEnd, BeatMode mode,
                 int harmonicLayers = 1);
 
-    float phaseLeft() const { return phaseLeft_; }
-    float phaseRight() const { return phaseRight_; }
+    float phaseLeft() const { return static_cast<float>(phaseLeft_); }
+    float phaseRight() const { return static_cast<float>(phaseRight_); }
 
 private:
-    float phaseLeft_ = 0.0f;
-    float phaseRight_ = 0.0f;
+    double phaseLeft_ = 0.0;
+    double phaseRight_ = 0.0;
     float harmonicPhases_[3] = {0.0f, 0.0f, 0.0f};
-
-    static float wrapPhase(float phase);
 };
 
 }  // namespace manticore::toneflow

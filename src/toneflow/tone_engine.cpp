@@ -28,13 +28,17 @@ void ToneEngine::prepare(uint32_t sampleRateHz, uint32_t framesPerCallback)
     filters_.prepare(sampleRateHz_);
     micFilters_.prepare(sampleRateHz_);
     micFilters_.setType(FilterType::Warm);
-    noiseHp_.setCutoff(80.0f, static_cast<float>(sampleRateHz_));
-    noiseLp_.setCutoff(1400.0f, static_cast<float>(sampleRateHz_));
+    noiseHp_.setCutoff(100.0f, static_cast<float>(sampleRateHz_));
+    noiseLp_.setCutoff(900.0f, static_cast<float>(sampleRateHz_));
     // Speech / monitoring band — cuts rumble and hiss with almost no delay.
     micHp_.setCutoff(120.0f, static_cast<float>(sampleRateHz_));
     micLp_.setCutoff(4500.0f, static_cast<float>(sampleRateHz_));
     micHpTight_.setCutoff(180.0f, static_cast<float>(sampleRateHz_));
     micLpTight_.setCutoff(3800.0f, static_cast<float>(sampleRateHz_));
+    // Soothing velvet — removes grit / speaker hash without killing the carrier.
+    velvetLpL_.setCutoff(3200.0f, static_cast<float>(sampleRateHz_));
+    velvetLpR_.setCutoff(3200.0f, static_cast<float>(sampleRateHz_));
+    subSmooth_.setCutoff(120.0f, static_cast<float>(sampleRateHz_));
     pink_.seed = 0xC0FFEEu;
     pink_.amplitude = 1.0f;
     pink_.reset();
@@ -50,17 +54,18 @@ void ToneEngine::configureTherapeuticReverb()
     if (!reverb_.enabled()) {
         return;
     }
+    // Soft spatial halo only — preserve binaural beat coherence.
     if (params_.mode == BeatMode::Binaural) {
         float wet = reverb_.wet();
         switch (params_.reverb) {
             case ReverbPreset::Room:
-                wet = std::min(wet, 0.08f);
+                wet = std::min(wet, 0.10f);
                 break;
             case ReverbPreset::Chamber:
-                wet = std::min(wet, 0.11f);
+                wet = std::min(wet, 0.13f);
                 break;
             case ReverbPreset::Cave:
-                wet = std::min(wet, 0.14f);
+                wet = std::min(wet, 0.16f);
                 break;
             default:
                 break;
@@ -80,6 +85,8 @@ void ToneEngine::setParams(const ToneParams& params)
     target_.fadeInSec = clamp(params.fadeInSec, 0.0f, 60.0f);
     target_.comfortModDepth = clamp(params.comfortModDepth, 0.0f, 0.15f);
     target_.filterMix = clamp(params.filterMix, 0.0f, 1.0f);
+    target_.subLevel = clamp(params.subLevel, 0.0f, 1.0f);
+    target_.subHz = clamp(params.subHz, 40.0f, 80.0f);
     target_.harmonicLayers =
         params.harmonicLayers < 1 ? 1
                                   : (params.harmonicLayers > 3 ? 3 : params.harmonicLayers);
@@ -96,6 +103,8 @@ void ToneEngine::setParams(const ToneParams& params)
     params_.fadeInSec = target_.fadeInSec;
     params_.comfortModDepth = target_.comfortModDepth;
     params_.filterMix = target_.filterMix;
+    params_.subLevel = target_.subLevel;
+    params_.subHz = target_.subHz;
     filters_.setType(params_.filter);
     filters_.setToneHz(target_.carrierHz);
     configureTherapeuticReverb();
@@ -166,12 +175,27 @@ void ToneEngine::setVolume(float volume)
     target_.masterVolume = params_.masterVolume;
 }
 
+void ToneEngine::setSubLevel(float level)
+{
+    params_.subLevel = clamp(level, 0.0f, 1.0f);
+    target_.subLevel = params_.subLevel;
+}
+
+void ToneEngine::setSubHz(float hz)
+{
+    // Floor at 40 Hz — lower values rattle phone speakers into staticy distortion.
+    params_.subHz = clamp(hz, 40.0f, 80.0f);
+    target_.subHz = params_.subHz;
+}
+
 void ToneEngine::setMicFeedbackEnabled(bool enabled)
 {
     micFeedbackEnabled_ = enabled;
     if (!enabled) {
         micRms_ = 0.0f;
         micAgcGain_ = 1.0f;
+        micGateOpen_ = 0.0f;
+        micFrame_.clear();
     }
 }
 
@@ -211,11 +235,17 @@ void ToneEngine::reset()
     samplesRendered_ = 0;
     comfortPhase_ = 0.0f;
     beatPhase_ = 0.0f;
+    subPhase_ = 0.0;
+    rumblePhase_ = 0.0;
+    subPulsePhase_ = 0.0;
     micRms_ = 0.0f;
     micAgcGain_ = 1.0f;
     micGateOpen_ = 0.0f;
     micHpTight_.reset();
     micLpTight_.reset();
+    velvetLpL_.reset();
+    velvetLpR_.reset();
+    subSmooth_.reset();
 }
 
 void ToneEngine::smoothTowardTargets()
@@ -224,7 +254,9 @@ void ToneEngine::smoothTowardTargets()
     beatHz_ += smoothAlpha_ * (target_.beatHz - beatHz_);
     params_.carrierHz = carrierHz_;
     params_.beatHz = beatHz_;
-    filters_.setToneHz(carrierHz_);
+    if (params_.filter != FilterType::Off) {
+        filters_.setToneHz(carrierHz_);
+    }
 }
 
 void ToneEngine::advanceBeatPhase(uint32_t frames)
@@ -239,6 +271,70 @@ void ToneEngine::advanceBeatPhase(uint32_t frames)
     }
 }
 
+void ToneEngine::ensureWorkBuffers(uint32_t frames, uint32_t sampleRateHz)
+{
+    if (noiseFrame_.framesPerChannel() != frames ||
+        noiseFrame_.sampleRateHz != sampleRateHz) {
+        noiseFrame_ = AudioFrame(frames, sampleRateHz, 2);
+    }
+    if (dryFrame_.framesPerChannel() != frames ||
+        dryFrame_.sampleRateHz != sampleRateHz) {
+        dryFrame_ = AudioFrame(frames, sampleRateHz, 2);
+    }
+}
+
+void ToneEngine::blendSubBass(AudioFrame& stereo)
+{
+    const float level = params_.subLevel;
+    if (level <= 0.0f || stereo.sampleRateHz == 0 || !stereo.isStereo()) {
+        return;
+    }
+
+    constexpr double kTwoPi = 6.283185307179586476925286766559;
+    const double sr = static_cast<double>(stereo.sampleRateHz);
+    // Phone-safe band — deep subs (<40 Hz) distort tiny speakers into static.
+    const float subHz = clamp(params_.subHz, 40.0f, 80.0f);
+    const double subInc = kTwoPi * static_cast<double>(subHz) / sr;
+    // Very slow breath swell (~5/min) — soothing, never choppy.
+    constexpr double kBreathHz = 0.0833;
+    const double breathInc = kTwoPi * kBreathHz / sr;
+
+    // Modest gain — headroom prevents clipping hash.
+    const float gain = level * 0.28f;
+
+    for (size_t i = 0; i < stereo.framesPerChannel(); ++i) {
+        float body = static_cast<float>(std::sin(subPhase_)) * gain;
+        body = subSmooth_.processSample(body);
+        const float breath =
+            0.88f + 0.12f * (0.5f - 0.5f * static_cast<float>(std::cos(subPulsePhase_)));
+        body *= breath;
+
+        stereo.set(i, 0, stereo.get(i, 0) + body);
+        stereo.set(i, 1, stereo.get(i, 1) + body);
+
+        subPhase_ += subInc;
+        subPulsePhase_ += breathInc;
+    }
+
+    while (subPhase_ >= kTwoPi) {
+        subPhase_ -= kTwoPi;
+    }
+    while (subPulsePhase_ >= kTwoPi) {
+        subPulsePhase_ -= kTwoPi;
+    }
+}
+
+void ToneEngine::applyVelvetSmooth(AudioFrame& stereo)
+{
+    if (!stereo.isStereo()) {
+        return;
+    }
+    for (size_t i = 0; i < stereo.framesPerChannel(); ++i) {
+        stereo.set(i, 0, velvetLpL_.processSample(stereo.get(i, 0)));
+        stereo.set(i, 1, velvetLpR_.processSample(stereo.get(i, 1)));
+    }
+}
+
 void ToneEngine::blendKernelNoise(AudioFrame& stereo)
 {
     const float blend = params_.kernelNoiseBlend;
@@ -246,15 +342,16 @@ void ToneEngine::blendKernelNoise(AudioFrame& stereo)
         return;
     }
 
-    noiseFrame_ = AudioFrame(static_cast<uint32_t>(stereo.framesPerChannel()),
-                             stereo.sampleRateHz, 2);
-    pink_.amplitude = 0.22f;
+    ensureWorkBuffers(static_cast<uint32_t>(stereo.framesPerChannel()),
+                      stereo.sampleRateHz);
+    // Extremely quiet optional bed — never the default path.
+    pink_.amplitude = 0.06f;
     pink_.render(noiseFrame_);
     noiseHp_.processFrame(noiseFrame_);
     noiseLp_.processFrame(noiseFrame_);
 
-    const float toneGain = 1.0f - blend * 0.22f;
-    const float noiseGain = blend * 0.38f;
+    const float toneGain = 1.0f - blend * 0.04f;
+    const float noiseGain = blend * 0.06f;
     for (size_t i = 0; i < stereo.framesPerChannel(); ++i) {
         for (uint32_t ch = 0; ch < 2; ++ch) {
             stereo.set(i, ch,
@@ -270,8 +367,8 @@ void ToneEngine::applyNoiseMask(AudioFrame& stereo)
         return;
     }
 
-    noiseFrame_ = AudioFrame(static_cast<uint32_t>(stereo.framesPerChannel()),
-                             stereo.sampleRateHz, 2);
+    ensureWorkBuffers(static_cast<uint32_t>(stereo.framesPerChannel()),
+                      stereo.sampleRateHz);
     const float amp = std::pow(10.0f, params_.noiseLevelDbfs / 20.0f);
     if (params_.noiseMask == NoiseMask::Pink) {
         pink_.amplitude = amp;
@@ -293,8 +390,8 @@ void ToneEngine::applyColorFilter(AudioFrame& stereo)
         return;
     }
 
-    dryFrame_ = AudioFrame(static_cast<uint32_t>(stereo.framesPerChannel()),
-                           stereo.sampleRateHz, 2);
+    ensureWorkBuffers(static_cast<uint32_t>(stereo.framesPerChannel()),
+                      stereo.sampleRateHz);
     for (size_t i = 0; i < stereo.framesPerChannel(); ++i) {
         dryFrame_.set(i, 0, stereo.get(i, 0));
         dryFrame_.set(i, 1, stereo.get(i, 1));
@@ -362,7 +459,8 @@ void ToneEngine::applyFadeIn(AudioFrame& stereo)
 
 void ToneEngine::applySoftLimiter(AudioFrame& stereo)
 {
-    constexpr float kThreshold = 0.7079457843f;
+    // High threshold — only safety. Aggressive limiting was adding harsh hash.
+    constexpr float kThreshold = 0.90f;
     for (float& s : stereo.samples) {
         const float a = std::fabs(s);
         if (a <= kThreshold) {
@@ -370,7 +468,7 @@ void ToneEngine::applySoftLimiter(AudioFrame& stereo)
         }
         const float sign = s >= 0.0f ? 1.0f : -1.0f;
         const float over = (a - kThreshold) / (1.0f - kThreshold + 1e-6f);
-        const float shaped = kThreshold + (1.0f - kThreshold) * std::tanh(over);
+        const float shaped = kThreshold + (1.0f - kThreshold) * std::tanh(over * 0.8f);
         s = sign * shaped;
     }
 }
@@ -401,6 +499,7 @@ void ToneEngine::render(AudioFrame& stereoOut)
                        stereoOut.sampleRateHz, 2);
     }
 
+    // Pure sine path first. FX are opt-in only — defaults stay glass-clean.
     osc_.render(toneFrame_, c0, c1, b0, b1, params_.mode,
                 params_.harmonicLayers);
 
@@ -409,12 +508,31 @@ void ToneEngine::render(AudioFrame& stereoOut)
         stereoOut.set(i, 1, toneFrame_.get(i, 1));
     }
 
-    blendKernelNoise(stereoOut);
-    applyPerception(stereoOut, params_.perception, beatHz_, perception_);
-    applyColorFilter(stereoOut);
-    applyNoiseMask(stereoOut);
-    reverb_.process(stereoOut);
-    applyComfortMod(stereoOut);
+    // Soft continuous sub hum (no beat chopping — that sounded staticy).
+    blendSubBass(stereoOut);
+
+    if (params_.kernelNoiseBlend > 0.0f) {
+        blendKernelNoise(stereoOut);
+    }
+    if (params_.perception != PerceptionMode::Standard) {
+        applyPerception(stereoOut, params_.perception, beatHz_, perception_);
+    }
+    if (params_.filter != FilterType::Off && params_.filterMix > 0.0f) {
+        filters_.setToneHz(carrierHz_);
+        applyColorFilter(stereoOut);
+    }
+    if (params_.noiseMask != NoiseMask::None) {
+        applyNoiseMask(stereoOut);
+    }
+    if (params_.reverb != ReverbPreset::Off) {
+        reverb_.process(stereoOut);
+    }
+    if (params_.comfortModDepth > 0.0f) {
+        applyComfortMod(stereoOut);
+    }
+
+    // Velvet smooth the whole bed — soothing, removes speaker grit.
+    applyVelvetSmooth(stereoOut);
     applyFadeIn(stereoOut);
 
     const float vol = params_.masterVolume;
@@ -487,32 +605,40 @@ void ToneEngine::processMicFrame(const float* micInterleaved, uint32_t frames,
         std::sqrt(filteredSq / static_cast<double>(micFrame_.samples.size())));
     micRms_ = rawRms;
 
-    // Noise gate — mute hiss/room tone when input is quiet.
-    constexpr float kGateOpen = 0.012f;   // ~-38 dBFS
-    constexpr float kGateClose = 0.007f;  // hysteresis
+    // Aggressive noise gate — room hiss / speaker bleed stays muted.
+    constexpr float kGateOpen = 0.022f;   // ~-33 dBFS
+    constexpr float kGateClose = 0.014f;  // hysteresis
     const float gateTarget =
         (rawRms > (micGateOpen_ > 0.5f ? kGateClose : kGateOpen)) ? 1.0f : 0.0f;
     // Fast open, slower close to avoid chatter.
-    const float gateAlpha = gateTarget > micGateOpen_ ? 0.45f : 0.08f;
+    const float gateAlpha = gateTarget > micGateOpen_ ? 0.55f : 0.12f;
     micGateOpen_ += gateAlpha * (gateTarget - micGateOpen_);
 
-    // AGC only when the gate is open — never pump up the noise floor.
-    if (micGateOpen_ > 0.2f && rawRms > kGateClose) {
-        const float desired = clamp(micAgcTarget_ / rawRms, 0.5f, 2.2f);
-        micAgcGain_ += 0.06f * (desired - micAgcGain_);
-    } else {
-        micAgcGain_ += 0.04f * (1.0f - micAgcGain_);
+    // Hard mute once the gate is nearly closed — no residual hiss under tones.
+    if (micGateOpen_ < 0.05f) {
+        micGateOpen_ = 0.0f;
+        micFrame_.clear();
+        micAgcGain_ += 0.08f * (1.0f - micAgcGain_);
+        return;
     }
-    micAgcGain_ = clamp(micAgcGain_, 0.5f, 2.2f);
+
+    // AGC only when the gate is open — never pump up the noise floor.
+    if (micGateOpen_ > 0.25f && rawRms > kGateClose) {
+        const float desired = clamp(micAgcTarget_ / rawRms, 0.6f, 1.6f);
+        micAgcGain_ += 0.05f * (desired - micAgcGain_);
+    } else {
+        micAgcGain_ += 0.06f * (1.0f - micAgcGain_);
+    }
+    micAgcGain_ = clamp(micAgcGain_, 0.6f, 1.6f);
 
     const float g = micAgcGain_ * micFeedbackGain_ * micGateOpen_;
     for (float& s : micFrame_.samples) {
         s *= g;
         // Soft clip
-        if (s > 0.85f) {
-            s = 0.85f + 0.15f * std::tanh((s - 0.85f) * 3.0f);
-        } else if (s < -0.85f) {
-            s = -0.85f + 0.15f * std::tanh((s + 0.85f) * 3.0f);
+        if (s > 0.75f) {
+            s = 0.75f + 0.25f * std::tanh((s - 0.75f) * 2.5f);
+        } else if (s < -0.75f) {
+            s = -0.75f + 0.25f * std::tanh((s + 0.75f) * 2.5f);
         }
     }
 }
@@ -543,21 +669,32 @@ void ToneEngine::renderInterleavedWithMic(float* interleavedStereoOut,
         processMicFrame(micInterleaved, frames, micChannels);
     } else {
         micRms_ = 0.0f;
+        micGateOpen_ = 0.0f;
     }
 
-    const float toneGain = useMic ? toneMix_ : 1.0f;
-    const float micGain = useMic ? (1.0f - toneMix_ * 0.85f) : 0.0f;
+    // When the gate is closed, leave tones at full level — no ducking, no hiss.
+    const float gate = useMic ? micGateOpen_ : 0.0f;
+    const float micLayer = useMic ? (1.0f - toneMix_) * gate : 0.0f;
+    const float toneGain = 1.0f - micLayer * 0.35f;
+
+    auto softCeil = [](float x) {
+        const float a = std::fabs(x);
+        if (a <= 0.85f) {
+            return x;
+        }
+        const float sign = x >= 0.0f ? 1.0f : -1.0f;
+        return sign * (0.85f + 0.12f * std::tanh((a - 0.85f) * 3.0f));
+    };
 
     for (uint32_t i = 0; i < frames; ++i) {
         float l = toneFrame_.get(i, 0) * toneGain;
         float r = toneFrame_.get(i, 1) * toneGain;
-        if (useMic) {
-            l += micFrame_.get(i, 0) * micGain;
-            r += micFrame_.get(i, 1) * micGain;
+        if (micLayer > 0.0f) {
+            l += micFrame_.get(i, 0) * micLayer;
+            r += micFrame_.get(i, 1) * micLayer;
         }
-        // Final safety clip for speaker / BT / headphone paths.
-        interleavedStereoOut[i * 2 + 0] = clamp(l, -0.95f, 0.95f);
-        interleavedStereoOut[i * 2 + 1] = clamp(r, -0.95f, 0.95f);
+        interleavedStereoOut[i * 2 + 0] = softCeil(l);
+        interleavedStereoOut[i * 2 + 1] = softCeil(r);
     }
 }
 

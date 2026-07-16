@@ -10,8 +10,10 @@ class ColorFilterBank {
 public:
     void prepare(uint32_t sampleRateHz);
     void setType(FilterType type);
-    void setToneHz(float centerHz);  // follows carrier for adaptive band
+    void setToneHz(float centerHz);  // follows carrier for adaptive bloom
     void process(AudioFrame& stereo);
+    /** Always-on gentle carrier peak — makes pure sines bloom / resonate. */
+    void processBloom(AudioFrame& stereo, float mix);
     void reset();
 
     FilterType type() const { return type_; }
@@ -35,8 +37,10 @@ private:
     float toneHz_ = 210.0f;
     Biquad leftA_{}, leftB_{};
     Biquad rightA_{}, rightB_{};
+    Biquad bloomL_{}, bloomR_{};
 
     void rebuild();
+    void rebuildBloom();
 };
 
 }  // namespace manticore::toneflow

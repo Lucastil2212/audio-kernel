@@ -70,7 +70,8 @@ class MainActivity : AppCompatActivity() {
                     binding.micStatus.text = getString(R.string.mic_status_off)
                 }
             }
-            uiHandler.postDelayed(this, 33L)
+            // ~15 Hz UI — must stay off the audio mutex (telemetry is lock-free).
+            uiHandler.postDelayed(this, 66L)
         }
     }
 
@@ -196,7 +197,7 @@ class MainActivity : AppCompatActivity() {
             binding.harmonicsLabel.text = getString(R.string.harmonics, layers)
         }
         bindSlider(binding.noiseBar) { progress ->
-            engine.setNoiseBlend(progress / 100f)
+            engine.setSubLevel(progress / 100f)
             binding.noiseLabel.text = getString(R.string.noise_bed, progress.toFloat())
         }
         bindSlider(binding.volumeBar) { progress ->
@@ -213,19 +214,20 @@ class MainActivity : AppCompatActivity() {
                 getString(R.string.tone_mix, progress, 100 - progress)
         }
 
-        binding.volumeBar.progress = 12
-        engine.setVolume(0.12f)
-        binding.volumeLabel.text = getString(R.string.volume, 12)
-        binding.micGainBar.progress = 28
-        engine.setMicGain(0.28f)
-        binding.micGainLabel.text = getString(R.string.mic_gain, 28)
-        binding.toneMixBar.progress = 70
-        engine.setToneMix(0.70f)
-        binding.toneMixLabel.text = getString(R.string.tone_mix, 70, 30)
+        binding.volumeBar.progress = 18
+        engine.setVolume(0.18f)
+        binding.volumeLabel.text = getString(R.string.volume, 18)
+        binding.micGainBar.progress = 0
+        engine.setMicGain(0.0f)
+        binding.micGainLabel.text = getString(R.string.mic_gain, 0)
+        binding.toneMixBar.progress = 100
+        engine.setToneMix(1.0f)
+        binding.toneMixLabel.text = getString(R.string.tone_mix, 100, 0)
         binding.harmonicsBar.progress = 0
         binding.harmonicsLabel.text = getString(R.string.harmonics, 1)
-        binding.noiseBar.progress = 10
-        binding.noiseLabel.text = getString(R.string.noise_bed, 10f)
+        binding.noiseBar.progress = 12
+        engine.setSubLevel(0.12f)
+        binding.noiseLabel.text = getString(R.string.noise_bed, 12f)
 
         syncSlidersFromEngine()
     }
@@ -281,10 +283,13 @@ class MainActivity : AppCompatActivity() {
         syncingUi = true
         val carrier = engine.carrierHz().coerceIn(100f, 1000f)
         val beat = engine.beatHz().coerceIn(0f, 40f)
+        val sub = (engine.subLevel() * 100f).roundToInt().coerceIn(0, 100)
         binding.carrierBar.progress = (carrier - 100f).roundToInt()
         binding.beatBar.progress = (beat * 10f).roundToInt()
+        binding.noiseBar.progress = sub
         binding.carrierLabel.text = getString(R.string.carrier, carrier)
         binding.beatLabel.text = getString(R.string.beat, beat)
+        binding.noiseLabel.text = getString(R.string.noise_bed, sub.toFloat())
         syncingUi = false
     }
 

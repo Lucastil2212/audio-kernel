@@ -5,72 +5,56 @@
 namespace manticore::toneflow {
 namespace {
 
-constexpr float kTwoPi = 6.28318530717958647692f;
-// Slightly lower peak than ToneFlow desktop — long-session comfort.
-constexpr float kBinauralAmp = 0.72f;
-constexpr float kMonauralAmp = 0.38f;
-constexpr float kIsochronicAmp = 0.62f;
+constexpr double kTwoPi = 6.283185307179586476925286766559;
 
 float lerp(float a, float b, float t) { return a + (b - a) * t; }
 
-/** Raised-cosine^2 gate — softer edges, less startle than plain cosine. */
-float softIsochronicGate(float phase)
+void wrapPhaseInPlace(double& phase)
 {
-    const float raised = 0.5f - 0.5f * std::cos(phase);
-    return raised * raised;
+    while (phase >= kTwoPi) {
+        phase -= kTwoPi;
+    }
+    while (phase < 0.0) {
+        phase += kTwoPi;
+    }
 }
 
 }  // namespace
 
 void ToneOscillator::reset()
 {
-    phaseLeft_ = 0.0f;
-    phaseRight_ = 0.0f;
+    phaseLeft_ = 0.0;
+    phaseRight_ = 0.0;
     for (float& p : harmonicPhases_) {
         p = 0.0f;
     }
 }
 
-float ToneOscillator::wrapPhase(float phase)
-{
-    while (phase >= kTwoPi) {
-        phase -= kTwoPi;
-    }
-    while (phase < 0.0f) {
-        phase += kTwoPi;
-    }
-    return phase;
-}
-
 void ToneOscillator::render(AudioFrame& stereoOut, float carrierStart,
                             float carrierEnd, float beatStart, float beatEnd,
-                            BeatMode mode, int harmonicLayers)
+                            BeatMode mode, int /*harmonicLayers*/)
 {
     if (!stereoOut.isStereo() || stereoOut.sampleRateHz == 0) {
         return;
     }
 
+    // Lower peak leaves headroom for a soft sub hum without clipping/static.
+    constexpr float kBinauralAmp = 0.58f;
+    constexpr float kMonauralAmp = 0.32f;
+    constexpr float kIsochronicAmp = 0.52f;
+
     const size_t n = stereoOut.framesPerChannel();
-    const float sr = static_cast<float>(stereoOut.sampleRateHz);
+    const double sr = static_cast<double>(stereoOut.sampleRateHz);
     const float invN = n > 1 ? 1.0f / static_cast<float>(n - 1) : 0.0f;
 
     carrierStart = clamp(carrierStart, 100.0f, 1000.0f);
     carrierEnd = clamp(carrierEnd, 100.0f, 1000.0f);
     beatStart = clamp(beatStart, 0.0f, 40.0f);
     beatEnd = clamp(beatEnd, 0.0f, 40.0f);
-    harmonicLayers = harmonicLayers < 1 ? 1 : (harmonicLayers > 3 ? 3 : harmonicLayers);
 
     if (mode == BeatMode::Isochronic) {
         beatStart = clamp(std::max(beatStart, 0.1f), 0.1f, 40.0f);
         beatEnd = clamp(std::max(beatEnd, 0.1f), 0.1f, 40.0f);
-    }
-
-    // Warm harmonic bed: octave + perfect fifth, kept quiet so beat stays clear.
-    constexpr float kLayerRatio[3] = {1.0f, 1.5f, 2.0f};
-    constexpr float kLayerAmp[3] = {0.90f, 0.07f, 0.03f};
-    float ampSum = 0.0f;
-    for (int i = 0; i < harmonicLayers; ++i) {
-        ampSum += kLayerAmp[i];
     }
 
     const float loudness =
@@ -85,48 +69,46 @@ void ToneOscillator::render(AudioFrame& stereoOut, float carrierStart,
         float right = 0.0f;
 
         if (mode == BeatMode::Isochronic) {
-            const float cInc = kTwoPi * carrier / sr;
-            const float bInc = kTwoPi * beat / sr;
-            const float carrierSample = std::sin(phaseLeft_);
-            const float gate = softIsochronicGate(phaseRight_);
-            // Floor keeps a faint carrier so pulses feel less abrupt.
-            const float mono =
-                carrierSample * (0.12f + 0.88f * gate) * kIsochronicAmp * loudness;
+            const double cInc = kTwoPi * static_cast<double>(carrier) / sr;
+            const double bInc = kTwoPi * static_cast<double>(beat) / sr;
+            // Soft gate with high floor — never fully chops (avoids clicky static).
+            const float gate =
+                0.35f + 0.65f * (0.5f - 0.5f * static_cast<float>(std::cos(phaseRight_)));
+            const float mono = static_cast<float>(std::sin(phaseLeft_)) * gate *
+                               kIsochronicAmp * loudness;
             left = mono;
             right = mono;
-            phaseLeft_ = wrapPhase(phaseLeft_ + cInc);
-            phaseRight_ = wrapPhase(phaseRight_ + bInc);
+            phaseLeft_ += cInc;
+            phaseRight_ += bInc;
         } else if (mode == BeatMode::Monaural) {
-            const float fL = carrier - beat * 0.5f;
-            const float fR = carrier + beat * 0.5f;
-            const float mono = (std::sin(phaseLeft_) + std::sin(phaseRight_)) *
-                               kMonauralAmp * loudness;
+            const double fL =
+                static_cast<double>(carrier) - static_cast<double>(beat) * 0.5;
+            const double fR =
+                static_cast<double>(carrier) + static_cast<double>(beat) * 0.5;
+            const float mono =
+                (static_cast<float>(std::sin(phaseLeft_)) +
+                 static_cast<float>(std::sin(phaseRight_))) *
+                kMonauralAmp * loudness;
             left = mono;
             right = mono;
-            phaseLeft_ = wrapPhase(phaseLeft_ + kTwoPi * fL / sr);
-            phaseRight_ = wrapPhase(phaseRight_ + kTwoPi * fR / sr);
+            phaseLeft_ += kTwoPi * fL / sr;
+            phaseRight_ += kTwoPi * fR / sr;
         } else {
-            // Binaural: independent L/R sines — keep channels pure for IACD.
-            const float fL = carrier - beat * 0.5f;
-            const float fR = carrier + beat * 0.5f;
-            left = std::sin(phaseLeft_) * kLayerAmp[0];
-            right = std::sin(phaseRight_) * kLayerAmp[0];
-            phaseLeft_ = wrapPhase(phaseLeft_ + kTwoPi * fL / sr);
-            phaseRight_ = wrapPhase(phaseRight_ + kTwoPi * fR / sr);
-
-            for (int h = 1; h < harmonicLayers; ++h) {
-                const float freq = clamp(carrier * kLayerRatio[h], 100.0f, 4000.0f);
-                const float tone = std::sin(harmonicPhases_[h]) * kLayerAmp[h];
-                // Shared harmonic bed (no extra beat) — warmth without interference.
-                left += tone;
-                right += tone;
-                harmonicPhases_[h] =
-                    wrapPhase(harmonicPhases_[h] + kTwoPi * freq / sr);
-            }
-
-            left = (left / ampSum) * kBinauralAmp * loudness;
-            right = (right / ampSum) * kBinauralAmp * loudness;
+            // Classic binaural: one pure sine per ear.
+            const double fL =
+                static_cast<double>(carrier) - static_cast<double>(beat) * 0.5;
+            const double fR =
+                static_cast<double>(carrier) + static_cast<double>(beat) * 0.5;
+            left =
+                static_cast<float>(std::sin(phaseLeft_)) * kBinauralAmp * loudness;
+            right =
+                static_cast<float>(std::sin(phaseRight_)) * kBinauralAmp * loudness;
+            phaseLeft_ += kTwoPi * fL / sr;
+            phaseRight_ += kTwoPi * fR / sr;
         }
+
+        wrapPhaseInPlace(phaseLeft_);
+        wrapPhaseInPlace(phaseRight_);
 
         stereoOut.set(i, 0, left);
         stereoOut.set(i, 1, right);

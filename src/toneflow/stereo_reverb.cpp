@@ -18,14 +18,14 @@ struct PresetCfg {
 
 PresetCfg cfgFor(ReverbPreset preset)
 {
-    // Drier / more damped than ToneFlow desktop — protects binaural cues.
+    // Soft halo for healing tones — heavy damp kills metallic / static grit.
     switch (preset) {
         case ReverbPreset::Room:
-            return {0.40f, 0.10f, 0.62f};
+            return {0.55f, 0.11f, 0.82f};
         case ReverbPreset::Chamber:
-            return {0.65f, 0.13f, 0.74f};
+            return {0.85f, 0.14f, 0.88f};
         case ReverbPreset::Cave:
-            return {1.10f, 0.16f, 0.86f};
+            return {1.35f, 0.17f, 0.92f};
         default:
             return {0.0f, 0.0f, 0.0f};
     }
