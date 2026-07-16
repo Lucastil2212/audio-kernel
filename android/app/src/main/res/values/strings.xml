@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Manticore ToneFlow</string>
+    <string name="headline">Perceptual tones</string>
+    <string name="subhead">Therapeutic fields · optional mic feedback</string>
+    <string name="disclaimer">Not a medical device. Focus names are exploratory (not Hemi-Sync®). Headphones recommended.</string>
+
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="now_playing">Now</string>
+    <string name="section_mic">Mic feedback</string>
+    <string name="section_sculpt">Sculpt</string>
+    <string name="section_journeys">Journeys</string>
+
+    <string name="mic_hint">Routes mic through DSP to speakers, headphones, or Bluetooth. Prefer headphones to avoid howl.</string>
+    <string name="mic_feedback">Enable live mic</string>
+    <string name="mic_gain_default">Mic gain</string>
+    <string name="mic_gain">Mic gain  %1$d%%</string>
+    <string name="tone_mix_default">Tone / mic mix</string>
+    <string name="tone_mix">Tones %1$d%%  ·  mic %2$d%%</string>
+    <string name="mic_status_off">Mic off</string>
+    <string name="mic_status_on">Mic  %1$.0f dBFS  ·  AGC ×%2$.2f</string>
+    <string name="mic_permission_needed">Allow microphone access for live feedback</string>
+    <string name="mic_permission_denied">Mic permission denied — tones only</string>
+
+    <string name="volume_default">Volume</string>
+    <string name="volume">Volume  %1$d%%</string>
+    <string name="carrier_default">Carrier</string>
+    <string name="carrier">Carrier  %1$.0f Hz</string>
+    <string name="beat_default">Beat</string>
+    <string name="beat">Beat  %1$.2f Hz</string>
+    <string name="harmonics_default">Harmonics</string>
+    <string name="harmonics">Harmonics  %1$d</string>
+    <string name="noise_bed_default">Noise bed</string>
+    <string name="noise_bed">Noise bed  %1$.0f%%</string>
+
+    <string name="mode">Mode</string>
+    <string name="perception">Field</string>
+    <string name="filter">Filter</string>
+    <string name="reverb">Space</string>
+
+    <string name="stereogram_cd">Beat-reactive stereogram</string>
+    <string name="stereogram_hint">Soft-focus the image — depth moves with the beat.</string>
+    <string name="status_paused">Ready</string>
+    <string name="status_starting">Starting…</string>
+    <string name="status_playing">%1$.0f Hz · %2$.1f Hz beat · %3$.0f dB</string>
+    <string name="status_detail">%1$s · %2$s</string>
+    <string name="audio_start_failed">Could not start audio output</string>
+</resources>

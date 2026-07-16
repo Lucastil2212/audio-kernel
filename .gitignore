@@ -1,3 +1,12 @@
 build/
 *.wav
 test_output.wav
+.idea/
+
+# Android
+android/.gradle/
+android/**/build/
+android/**/.cxx/
+android/local.properties
+android/.DS_Store
+*.iml

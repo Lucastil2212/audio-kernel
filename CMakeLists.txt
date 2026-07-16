@@ -27,6 +27,13 @@ set(MANTICORE_SOURCES
     src/telemetry/system_health.cpp
     src/therapy/therapy_param_set.cpp
     src/therapy/stimulus_engine.cpp
+    src/toneflow/tone_oscillator.cpp
+    src/toneflow/perception.cpp
+    src/toneflow/stereo_reverb.cpp
+    src/toneflow/color_filters.cpp
+    src/toneflow/presets.cpp
+    src/toneflow/tone_engine.cpp
+
     src/safety/safety_governor.cpp
     src/engine/dsp_graph.cpp
     src/engine/audio_engine.cpp
@@ -76,6 +83,9 @@ target_link_libraries(live_passthrough PRIVATE manticore_audio)
 
 add_executable(latency_click_test tools/latency_click_test.cpp)
 target_link_libraries(latency_click_test PRIVATE manticore_audio)
+
+add_executable(generate_toneflow tools/generate_toneflow.cpp)
+target_link_libraries(generate_toneflow PRIVATE manticore_audio)
 
 if(MANTICORE_BUILD_TESTS)
     set(MANTICORE_TEST_SOURCES
